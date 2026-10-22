@@ -25,6 +25,9 @@ pub struct Config {
 pub struct EmojiConfig {
     /// Applied to every emoji that has skin tones.
     pub skin_tone: crate::emoji::SkinTone,
+    /// Colour emoji font family for the picker, with PNG glyphs (such as
+    /// Noto Color Emoji or JoyPixels); defaults to the first one installed.
+    pub font: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]

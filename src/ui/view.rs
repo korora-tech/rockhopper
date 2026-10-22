@@ -140,6 +140,8 @@ pub struct LauncherView {
     confirm_released: bool,
     /// Emoji per grid row, as last laid out.
     columns: usize,
+    /// Emoji drawn from the colour font, or `None` where it has no image.
+    emoji_images: HashMap<&'static str, Option<Arc<Image>>>,
     /// Decrypted, decoded clipboard images by clip id.
     images: HashMap<u64, Arc<Image>>,
     _subscriptions: Vec<Subscription>,
@@ -174,6 +176,7 @@ impl LauncherView {
             confirm_since: Instant::now(),
             confirm_released: false,
             columns: 1,
+            emoji_images: HashMap::new(),
             images: HashMap::new(),
             _subscriptions: subscriptions,
         };
@@ -518,16 +521,35 @@ impl LauncherView {
             .into_any_element()
     }
 
+    /// The emoji as an image from the colour font, once that has loaded.
+    fn emoji_image(&mut self, glyph: &'static str, cx: &App) -> Option<Arc<Image>> {
+        let font = self.launcher.read(cx).emoji_font.clone()?;
+        self.emoji_images
+            .entry(glyph)
+            .or_insert_with(|| font.png(glyph).map(|png| Arc::new(Image::from_bytes(ImageFormat::Png, png))))
+            .clone()
+    }
+
+    /// An emoji drawn `size` pixels square: the font's image, else text.
+    fn emoji_glyph(&mut self, glyph: &'static str, size: f32, cx: &App) -> AnyElement {
+        match self.emoji_image(glyph, cx) {
+            Some(image) => img(image).size(px(size)).into_any_element(),
+            None => div().text_size(px(size * 0.85)).child(glyph).into_any_element(),
+        }
+    }
+
     /// One row of the emoji grid.
-    fn render_emoji_row(&self, row: usize, emojis: &[Emoji], cx: &mut Context<Self>) -> AnyElement {
+    fn render_emoji_row(&mut self, row: usize, emojis: &[Emoji], cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let columns = self.columns.max(1);
         let start = row * columns;
         let end = (start + columns).min(self.results.len());
+        let glyphs: Vec<AnyElement> = (start..end)
+            .map(|ix| self.emoji_glyph(emojis[self.results[ix]].glyph, 36., cx))
+            .collect();
         h_flex()
             .h(px(EMOJI_TILE))
-            .children((start..end).map(|ix| {
-                let emoji = &emojis[self.results[ix]];
+            .children((start..end).zip(glyphs).map(|(ix, glyph)| {
                 div()
                     .id(ix)
                     .size(px(EMOJI_TILE))
@@ -536,11 +558,10 @@ impl LauncherView {
                     .items_center()
                     .justify_center()
                     .rounded(px(12.))
-                    .text_size(px(32.))
                     .when(ix == self.selected, |tile| tile.bg(theme.accent))
                     .on_mouse_move(cx.listener(move |this, _, _, cx| this.select(ix, cx)))
                     .on_click(cx.listener(move |this, _, window, cx| this.open_at(ix, window, cx)))
-                    .child(emoji.glyph)
+                    .child(glyph)
             }))
             .into_any_element()
     }
@@ -740,10 +761,14 @@ impl Render for LauncherView {
             .h(px(EMOJI_TILE * EMOJI_ROWS.min(rows as f32)))
             .px_2();
             let selected = self.results.get(self.selected).map(|&i| emojis[i].clone());
+            let info = selected.map(|emoji| {
+                let glyph = self.emoji_glyph(emoji.glyph, 32., cx);
+                emoji_info(&emoji, glyph, &theme)
+            });
             Some(
                 v_flex()
                     .child(div().py_2().child(grid))
-                    .when_some(selected, |body, emoji| body.child(emoji_info(&emoji, &theme)))
+                    .children(info)
                     .into_any_element(),
             )
         } else if self.results.is_empty() {
@@ -881,7 +906,7 @@ fn frequent_first(emojis: &[Emoji], history: &crate::history::History) -> Vec<us
 }
 
 /// The selected emoji, large, with its name and shortcode.
-fn emoji_info(emoji: &Emoji, theme: &Theme) -> impl IntoElement {
+fn emoji_info(emoji: &Emoji, glyph: AnyElement, theme: &Theme) -> AnyElement {
     h_flex()
         .px_4()
         .py_3()
@@ -889,7 +914,7 @@ fn emoji_info(emoji: &Emoji, theme: &Theme) -> impl IntoElement {
         .items_center()
         .border_t_1()
         .border_color(theme.border)
-        .child(div().text_size(px(28.)).child(emoji.glyph))
+        .child(glyph)
         .child(
             v_flex()
                 .min_w_0()
@@ -910,6 +935,7 @@ fn emoji_info(emoji: &Emoji, theme: &Theme) -> impl IntoElement {
                     )
                 }),
         )
+        .into_any_element()
 }
 
 /// "party popper" → "Party Popper".

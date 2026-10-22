@@ -18,7 +18,7 @@ use gpui_kit::*;
 
 use crate::apps::{self, App as DesktopApp};
 use crate::clipboard::{Clip, Clipboard};
-use crate::emoji::{self, Emoji};
+use crate::emoji::{self, Emoji, EmojiFont};
 use crate::config::{self, Config, ThemeChoice};
 use crate::history::{self, History};
 use crate::ipc::Request;
@@ -49,6 +49,9 @@ pub struct Launcher {
     clips: Rc<Vec<Clip>>,
     /// Every emoji, in the configured skin tone.
     emojis: Rc<Vec<Emoji>>,
+    /// The colour emoji font the picker draws images from; loaded in the
+    /// background, and `None` until then or if there is none.
+    emoji_font: Option<std::sync::Arc<EmojiFont>>,
     /// Where the next window opens.
     open_on: Start,
     window: Option<AnyWindowHandle>,
@@ -90,12 +93,14 @@ impl Launcher {
             clipboard,
             clips,
             emojis,
+            emoji_font: None,
             open_on: Start::Search,
             window: None,
             opening: false,
             hide_when_open: false,
         };
         this.refresh_index(cx);
+        this.load_emoji_font(cx);
         this
     }
 
@@ -138,10 +143,11 @@ impl Launcher {
         if stamp != self.config_stamp {
             self.config_stamp = stamp;
             let config = config::load();
-            if config.emoji.skin_tone != self.config.emoji.skin_tone {
-                self.emojis = Rc::new(emoji::all(config.emoji.skin_tone));
-            }
+            let emoji_changed = config.emoji != self.config.emoji;
             self.config = config;
+            if emoji_changed {
+                self.load_emoji_font(cx);
+            }
         }
         self.refresh_index(cx);
         self.windows = niri::windows();
@@ -260,6 +266,41 @@ impl Launcher {
             self.history.record(&key, history::now());
         }
         self.hide(cx);
+    }
+
+    /// Load the colour emoji font in the background, and with it the list
+    /// of emoji it can draw: newer emoji than the font knows would show as
+    /// blank boxes.
+    fn load_emoji_font(&mut self, cx: &mut Context<Self>) {
+        let configured = self.config.emoji.font.clone();
+        let tone = self.config.emoji.skin_tone;
+        cx.spawn(async move |this, cx| {
+            let (font, emojis) = cx
+                .background_spawn(async move {
+                    let font = EmojiFont::load(configured.as_deref());
+                    let mut emojis = emoji::all(tone);
+                    if let Some(font) = &font {
+                        emojis.retain(|e| font.draws(e.glyph));
+                    }
+                    (font, emojis)
+                })
+                .await;
+            match &font {
+                Some(font) => eprintln!("rockhopper: drawing emoji from {}", font.family),
+                None => eprintln!(
+                    "rockhopper: no colour emoji font found; emoji are drawn as text. Install Noto Color Emoji or set emoji.font"
+                ),
+            }
+            _ = this.update(cx, |this, cx| {
+                this.emoji_font = font.map(std::sync::Arc::new);
+                // Unless the skin tone changed meanwhile, which reloads.
+                if this.config.emoji.skin_tone == tone {
+                    this.emojis = Rc::new(emojis);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn delete_clip(&mut self, id: u64, cx: &mut Context<Self>) {
