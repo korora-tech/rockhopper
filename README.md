@@ -19,6 +19,7 @@ Rockhopper runs as a small background process, so it opens immediately. The firs
 | `rockhopper show` | Open the launcher. Starts Rockhopper if it is not running. |
 | `rockhopper hide` | Close the launcher. |
 | `rockhopper clipboard` | Open on the clipboard history. Starts Rockhopper if it is not running. |
+| `rockhopper emoji` | Open on the emoji picker. Starts Rockhopper if it is not running. |
 | `rockhopper daemon` | Run without opening, for autostart. Exits quietly if Rockhopper is already running. |
 | `rockhopper quit` | Stop Rockhopper. |
 
@@ -30,6 +31,7 @@ spawn-at-startup "rockhopper" "daemon"
 binds {
     Mod+Space { spawn "rockhopper"; }
     Mod+Shift+V { spawn "rockhopper" "clipboard"; }
+    Mod+Period { spawn "rockhopper" "emoji"; }
 }
 ```
 
@@ -55,6 +57,7 @@ Starting Rockhopper from the compositor gives it your session's `PATH` and `XDG_
 | Lock Screen, Suspend | Run it | |
 | Log Out, Restart, Shut Down | Press `enter` twice: the first press asks for confirmation | |
 | Clipboard History | Open the clipboard history | |
+| Search Emoji | Open the emoji picker | |
 
 Windows come from niri's IPC and show which app and workspace they belong to. On other compositors, no windows are listed.
 
@@ -71,6 +74,10 @@ Each time the launcher opens, Rockhopper checks whether those directories change
 Apps start detached from Rockhopper. When `systemd-run` is available, each app runs in its own user scope named `app-rockhopper-<app id>-<random>.scope`, so stopping or restarting Rockhopper never closes apps you launched. Apps marked `Terminal=true` start through the `terminal` command from the config.
 
 Icons come from your icon theme: the configured `icon_theme`, otherwise the GTK setting, then `hicolor`. Apps without an icon get a coloured initial.
+
+## Emoji
+
+**Search Emoji** in the launcher, or `rockhopper emoji`, opens a grid of every Unicode emoji. Type to search by name or GitHub shortcode (`tada` finds 🎉). The arrow keys move around the grid, and the selected emoji's name and shortcode show below it. `enter` copies the emoji; `ctrl-k` also offers Copy Shortcode (`:tada:`). Emoji you use often come first when the search is empty. Set `emoji.skin_tone` to use one skin tone for every emoji that has them.
 
 ## Clipboard history
 
@@ -101,6 +108,8 @@ icon_theme: Papirus-Dark
 system:
   lock: [loginctl, lock-session]     # replace the Lock Screen command
   logout: [niri, msg, action, quit]  # replace the Log Out command
+emoji:
+  skin_tone: default   # default, light, medium-light, medium, medium-dark or dark
 clipboard:           # read when Rockhopper starts
   enabled: true
   max_entries: 200
