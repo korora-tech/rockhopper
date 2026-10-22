@@ -149,4 +149,6 @@ nix develop -c cargo test
 nix develop -c cargo run -- show
 ```
 
+To drive the launcher in an automated test without touching the real keyboard, start the daemon with `ROCKHOPPER_TEST=1`. Then `rockhopper test-type <text>` replaces the search text, and `rockhopper test-key <key>` presses `down`, `up`, `left`, `right`, `tab`, `shift-tab`, `enter`, `escape` or `ctrl-k` in the open window. A daemon started without the variable refuses these. Test keys have no key release, so they can never confirm Log Out, Restart, Shut Down or Delete All.
+
 GPUI reports layer-shell surfaces as client-decorated, so gpui-kit wraps them in its window frame. Rockhopper makes its overlay 21px larger than the output on each side and moves it back with negative margins, so that frame sits off-screen. See `FRAME_INSET` in `src/ui/mod.rs`.
