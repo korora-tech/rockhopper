@@ -79,6 +79,8 @@ Icons come from your icon theme: the configured `icon_theme`, otherwise the GTK 
 
 **Search Emoji** in the launcher, or `rockhopper emoji`, opens a grid of every Unicode emoji. Type to search by name or GitHub shortcode (`tada` finds 🎉). The arrow keys move around the grid, and the selected emoji's name and shortcode show below it. `enter` copies the emoji; `ctrl-k` also offers Copy Shortcode (`:tada:`). Emoji you use often come first when the search is empty. Set `emoji.skin_tone` to use one skin tone for every emoji that has them.
 
+Emoji are drawn from a colour emoji font's own images (Noto Color Emoji or JoyPixels, or the font set in `emoji.font`), so they look the same as in other apps. Emoji newer than that font are left out of the picker, since they would show as empty boxes. Without such a font, emoji are drawn as text.
+
 ## Clipboard history
 
 Rockhopper watches the clipboard through the wlr data-control protocol (niri, Sway, Hyprland and KDE support it) and keeps the last 200 copies: text, and PNG images. Open it with **Clipboard History** in the launcher or with `rockhopper clipboard`. It lists your copies newest first, with a preview of the selected one; typing searches them. `enter` puts the selected entry back on the clipboard, ready to paste. `ctrl-k` offers Delete Entry and Delete All Entries; Delete All needs a second `enter`.
@@ -110,6 +112,7 @@ system:
   logout: [niri, msg, action, quit]  # replace the Log Out command
 emoji:
   skin_tone: default   # default, light, medium-light, medium, medium-dark or dark
+  font: Noto Color Emoji   # a colour emoji font with PNG glyphs; default: the first installed
 clipboard:           # read when Rockhopper starts
   enabled: true
   max_entries: 200
