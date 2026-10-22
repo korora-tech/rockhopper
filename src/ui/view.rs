@@ -35,6 +35,11 @@ const CLIPBOARD_MIN_WIDTH: f32 = 920.;
 const CLIP_SEARCH_CHARS: usize = 2_000;
 const CLIP_PREVIEW_CHARS: usize = 10_000;
 const CONTEXT: &str = "Rockhopper";
+/// Actions menu geometry: rows, the title above them, padding, and the gap
+/// to the panel's bottom edge that keeps the footer visible.
+const MENU_ROW: f32 = 34.;
+const MENU_CHROME: f32 = 40.;
+const MENU_BOTTOM: f32 = 48.;
 /// Added to [`CONTEXT`] while the emoji grid shows, for its arrow keys.
 const GRID_CONTEXT: &str = "Rockhopper EmojiGrid";
 const EMOJI_TILE: f32 = 64.;
@@ -599,7 +604,7 @@ impl LauncherView {
             .occlude()
             .absolute()
             .right_3()
-            .bottom(px(48.))
+            .bottom(px(MENU_BOTTOM))
             .w(px(300.))
             .p_1()
             .rounded(px(12.))
@@ -626,7 +631,7 @@ impl LauncherView {
                 };
                 h_flex()
                     .id(("action", i))
-                    .h(px(34.))
+                    .h(px(MENU_ROW))
                     .px_2()
                     .gap_2()
                     .items_center()
@@ -853,11 +858,18 @@ impl Render for LauncherView {
             Mode::Clipboard | Mode::Emoji => self.results.get(self.selected).map(|_| "Copy"),
         };
         let menu = self.menu.as_ref().map(|menu| self.render_menu(menu, &theme, cx));
+        // The menu floats over the panel's lower edge; with few results the
+        // panel grows so the menu stays inside it.
+        let menu_room = self
+            .menu
+            .as_ref()
+            .map(|menu| px(MENU_CHROME + MENU_ROW * menu.actions.len() as f32 + MENU_BOTTOM + 12.));
 
         let panel = v_flex()
             .id("panel")
             .relative()
             .w(width)
+            .when_some(menu_room, |panel, room| panel.min_h(room))
             .occlude()
             .overflow_hidden()
             .rounded(px(18.))
@@ -869,6 +881,8 @@ impl Render for LauncherView {
             .when_some(body, |panel, body| {
                 panel.child(div().border_t_1().border_color(theme.border).child(body))
             })
+            // Keeps the footer at the bottom when the menu makes room.
+            .when(menu_room.is_some(), |panel| panel.child(div().flex_1()))
             .when_some(footer_verb, |panel, verb| {
                 panel.child(footer(verb, self.menu.is_some(), &theme))
             })
