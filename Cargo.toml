@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 description = "Rockhopper: a native GPUI launcher for Wayland"
 license = "Apache-2.0"
+repository = "https://github.com/korora-tech/rockhopper"
+# The oldest Rust its dependencies build with (oo7).
+rust-version = "1.92"
 
 [dependencies]
 gpui-kit = "=0.8.0"
