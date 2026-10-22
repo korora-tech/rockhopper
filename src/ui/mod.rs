@@ -21,7 +21,7 @@ use crate::clipboard::{Clip, Clipboard};
 use crate::emoji::{self, Emoji, EmojiFont};
 use crate::config::{self, Config, ThemeChoice};
 use crate::history::{self, History};
-use crate::ipc::Request;
+use crate::ipc::{Request, TestInput};
 use crate::items::{self, Action, Entry, Item};
 use crate::{icons, launch, niri};
 
@@ -55,6 +55,8 @@ pub struct Launcher {
     /// Where the next window opens.
     open_on: Start,
     window: Option<AnyWindowHandle>,
+    /// The open window's content, for test input.
+    view: Option<WeakEntity<view::LauncherView>>,
     opening: bool,
     hide_when_open: bool,
 }
@@ -96,6 +98,7 @@ impl Launcher {
             emoji_font: None,
             open_on: Start::Search,
             window: None,
+            view: None,
             opening: false,
             hide_when_open: false,
         };
@@ -123,6 +126,7 @@ impl Launcher {
                 self.show(cx);
             }
             Request::Hide => self.hide(cx),
+            Request::Test(input) => self.test_input(input, cx),
             Request::Quit => {
                 crate::ipc::remove_socket();
                 cx.quit();
@@ -192,7 +196,9 @@ impl Launcher {
         cx.defer(move |cx| {
             let view_launcher = launcher.clone();
             let opened = cx.open_window(options, |window, cx| {
-                let view = cx.new(|cx| view::LauncherView::new(view_launcher, start, window, cx));
+                let view = cx.new(|cx| view::LauncherView::new(view_launcher.clone(), start, window, cx));
+                let weak = view.downgrade();
+                view_launcher.update(cx, |this, _| this.view = Some(weak));
                 // gpui-kit's root paints the theme background; the backdrop
                 // is ours to draw.
                 cx.new(|cx| Root::new(view, window, cx).bg(transparent_black()))
@@ -210,6 +216,26 @@ impl Launcher {
                     }
                     Err(err) => eprintln!("rockhopper: could not open the launcher window: {err:#}"),
                 }
+            });
+        });
+    }
+
+    /// Apply test input to the open window, after this update, so the
+    /// view's handlers can update the launcher in turn.
+    fn test_input(&mut self, input: TestInput, cx: &mut Context<Self>) {
+        let (Some(handle), Some(view)) = (self.window, self.view.clone()) else {
+            eprintln!("rockhopper: test input with no window open");
+            return;
+        };
+        cx.defer(move |cx| {
+            _ = handle.update(cx, |_, window, cx| match input {
+                TestInput::Type(text) => {
+                    _ = view.update(cx, |view, cx| view.type_text(&text, window, cx));
+                }
+                TestInput::Key(key) => match view::test_action(&key) {
+                    Some(action) => window.dispatch_action(action, cx),
+                    None => eprintln!("rockhopper: unknown test key {key:?}"),
+                },
             });
         });
     }

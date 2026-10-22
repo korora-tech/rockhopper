@@ -9,7 +9,7 @@ use std::time::Duration;
 /// A client that connects and says nothing must not block other requests.
 const TIMEOUT: Duration = Duration::from_secs(1);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
     Toggle,
     Show,
@@ -19,10 +19,34 @@ pub enum Request {
     Clipboard,
     /// Open on the emoji picker.
     Emoji,
+    /// Drive the open launcher as if typed; see [`TestInput`].
+    Test(TestInput),
+}
+
+/// Input for automated tests, which cannot use the real keyboard without
+/// reaching the rest of the session. Accepted only by a daemon started with
+/// `ROCKHOPPER_TEST=1`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TestInput {
+    /// Replace the search text.
+    Type(String),
+    /// Press a key, by name: down, up, left, right, tab, enter, escape, ctrl-k.
+    Key(String),
+}
+
+/// Whether this daemon accepts [`Request::Test`].
+pub fn test_input_enabled() -> bool {
+    std::env::var_os("ROCKHOPPER_TEST").is_some_and(|v| v == "1")
 }
 
 impl Request {
     pub fn parse(s: &str) -> Option<Self> {
+        if let Some(text) = s.strip_prefix("test-type ") {
+            return Some(Self::Test(TestInput::Type(text.to_owned())));
+        }
+        if let Some(key) = s.strip_prefix("test-key ") {
+            return Some(Self::Test(TestInput::Key(key.to_owned())));
+        }
         Some(match s {
             "toggle" => Self::Toggle,
             "show" => Self::Show,
@@ -34,14 +58,16 @@ impl Request {
         })
     }
 
-    fn as_str(self) -> &'static str {
+    fn line(&self) -> String {
         match self {
-            Self::Toggle => "toggle",
-            Self::Show => "show",
-            Self::Hide => "hide",
-            Self::Quit => "quit",
-            Self::Clipboard => "clipboard",
-            Self::Emoji => "emoji",
+            Self::Toggle => "toggle".into(),
+            Self::Show => "show".into(),
+            Self::Hide => "hide".into(),
+            Self::Quit => "quit".into(),
+            Self::Clipboard => "clipboard".into(),
+            Self::Emoji => "emoji".into(),
+            Self::Test(TestInput::Type(text)) => format!("test-type {}", text.replace('\n', " ")),
+            Self::Test(TestInput::Key(key)) => format!("test-key {key}"),
         }
     }
 }
@@ -56,7 +82,7 @@ pub fn socket_path() -> PathBuf {
 }
 
 /// Send `request` to a running daemon. `Ok(false)` means none is running.
-pub fn send(request: Request) -> std::io::Result<bool> {
+pub fn send(request: &Request) -> std::io::Result<bool> {
     let mut stream = match UnixStream::connect(socket_path()) {
         Ok(s) => s,
         Err(e)
@@ -71,7 +97,7 @@ pub fn send(request: Request) -> std::io::Result<bool> {
     };
     stream.set_read_timeout(Some(TIMEOUT * 2))?;
     stream.set_write_timeout(Some(TIMEOUT))?;
-    writeln!(stream, "{}", request.as_str())?;
+    writeln!(stream, "{}", request.line())?;
     let mut reply = String::new();
     BufReader::new(stream).read_line(&mut reply)?;
     match reply.trim() {
@@ -104,6 +130,7 @@ pub fn bind() -> std::io::Result<UnixListener> {
 
 /// Accept connections on a thread and forward each request.
 pub fn serve(listener: UnixListener, tx: async_channel::Sender<Request>) {
+    let test_input = test_input_enabled();
     std::thread::Builder::new()
         .name("rockhopper-ipc".into())
         .spawn(move || {
@@ -115,7 +142,8 @@ pub fn serve(listener: UnixListener, tx: async_channel::Sender<Request>) {
                 if reader.read_line(&mut line).is_err() {
                     continue;
                 }
-                let reply = match Request::parse(line.trim()) {
+                let reply = match Request::parse(line.trim_end_matches(['\r', '\n'])) {
+                    Some(Request::Test(_)) if !test_input => "test input is off",
                     Some(req) => {
                         // So a `rockhopper` run right after `quit` starts a
                         // new daemon rather than reaching this one.

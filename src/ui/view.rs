@@ -73,6 +73,23 @@ pub fn bind_keys(cx: &mut gpui_kit::App) {
     ]);
 }
 
+/// The action a test key name stands for. There is deliberately no key
+/// release, so a destructive command's confirmation cannot be completed.
+pub fn test_action(key: &str) -> Option<Box<dyn gpui_kit::Action>> {
+    Some(match key {
+        "down" => Box::new(SelectDown),
+        "up" => Box::new(SelectUp),
+        "left" => Box::new(SelectLeft),
+        "right" => Box::new(SelectRight),
+        "tab" => Box::new(SelectNext),
+        "shift-tab" => Box::new(SelectPrevious),
+        "enter" => Box::new(Open),
+        "escape" => Box::new(Dismiss),
+        "ctrl-k" => Box::new(ToggleActions),
+        _ => return None,
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
     /// Apps, windows and commands; results index the launcher's entries.
@@ -186,6 +203,15 @@ impl LauncherView {
             Start::Emoji => this.set_mode(Mode::Emoji, window, cx),
         }
         this
+    }
+
+    /// Replace the search text, as typing would.
+    pub fn type_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // set_value does not emit InputEvent::Change.
+        self.input.update(cx, |input, cx| input.set_value(text.to_owned(), window, cx));
+        self.query = text.to_owned();
+        self.selected = 0;
+        self.rerank(cx);
     }
 
     fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {

@@ -31,10 +31,13 @@ toggle, show, clipboard and emoji start the launcher when it is not running yet.
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = match args.as_slice() {
-        [] => "toggle",
-        [one] => one.as_str(),
+        [] => "toggle".to_owned(),
+        [one] => one.clone(),
+        // Hidden, for automated tests: see ipc::TestInput.
+        [test, input] if test == "test-type" || test == "test-key" => format!("{test} {input}"),
         _ => usage_error(),
     };
+    let command = command.as_str();
     match command {
         "-h" | "--help" | "help" => println!("{USAGE}"),
         "-V" | "--version" => println!("rockhopper {}", env!("CARGO_PKG_VERSION")),
@@ -43,13 +46,17 @@ fn main() {
             let Some(request) = Request::parse(other) else {
                 usage_error()
             };
-            match ipc::send(request) {
+            match ipc::send(&request) {
                 Ok(true) => {}
                 Ok(false) => match request {
                     Request::Toggle | Request::Show | Request::Clipboard | Request::Emoji => {
                         run_daemon(Some(request))
                     }
                     Request::Hide | Request::Quit => {}
+                    Request::Test(_) => {
+                        eprintln!("rockhopper: not running");
+                        std::process::exit(1);
+                    }
                 },
                 Err(err) => {
                     eprintln!("rockhopper: {err}");
