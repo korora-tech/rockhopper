@@ -16,6 +16,15 @@ freedesktop-icons = "0.4"
 libc = "0.2" # setsid for launched apps
 # GPUI names Wayland outputs by a v5 UUID of their name.
 uuid = { version = "1", features = ["v5"] }
+# Clipboard history: watched and set through wlr data-control.
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+# Encrypted at rest; the key lives only in the Secret Service keyring.
+chacha20poly1305 = "0.10"
+sha2 = "0.10"
+getrandom = "0.3"
+keyring-core = "1"
+zbus-secret-service-keyring-store = { version = "1", features = ["rt-async-io-crypto-rust"] }
 
 [profile.release]
 lto = "thin"

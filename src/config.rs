@@ -15,6 +15,38 @@ pub struct Config {
     pub launch: Launch,
     /// Icon theme name; defaults to the GTK setting.
     pub icon_theme: Option<String>,
+    pub system: System,
+    pub clipboard: ClipboardConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClipboardConfig {
+    /// Watch the clipboard. Read at startup only.
+    pub enabled: bool,
+    pub max_entries: usize,
+    /// Keep copied PNG images as well as text.
+    pub images: bool,
+}
+
+impl Default for ClipboardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_entries: 200,
+            images: true,
+        }
+    }
+}
+
+/// Overrides for session commands, as program and arguments.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct System {
+    /// Default: `loginctl lock-session`.
+    pub lock: Option<Vec<String>>,
+    /// Default: niri's quit action, else `loginctl terminate-session`.
+    pub logout: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -55,6 +87,8 @@ impl Default for Config {
             terminal: vec!["xdg-terminal-exec".into()],
             launch: Launch::default(),
             icon_theme: None,
+            system: System::default(),
+            clipboard: ClipboardConfig::default(),
         }
     }
 }

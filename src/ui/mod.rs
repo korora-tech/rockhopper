@@ -1,0 +1,371 @@
+//! The launcher window: a full-screen layer-shell overlay with a search box
+//! that grows a result list as you type.
+//!
+//! [`Launcher`] lives for the whole daemon and owns the app index, history and
+//! config. Each time it is shown it opens a fresh [`view::LauncherView`]
+//! window, and hiding closes it, so every opening starts with an empty query.
+
+mod assets;
+mod view;
+
+use std::rc::Rc;
+use std::time::SystemTime;
+
+use gpui_kit::base::Root;
+use gpui_kit::component::theme::{Theme, ThemeMode};
+use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
+use gpui_kit::*;
+
+use crate::apps::{self, App as DesktopApp};
+use crate::clipboard::{Clip, Clipboard};
+use crate::config::{self, Config, ThemeChoice};
+use crate::history::{self, History};
+use crate::ipc::Request;
+use crate::items::{self, Action, Entry, Item};
+use crate::{icons, launch, niri};
+
+pub use assets::Assets;
+pub use view::bind_keys;
+
+/// gpui-kit wraps every window in a client-side frame: a 20px shadow gutter
+/// and a 1px border. GPUI reports layer surfaces as client-decorated, so the
+/// overlay gets that frame too, and we push it past the output's edges.
+const FRAME_INSET: Pixels = px(21.);
+
+pub struct Launcher {
+    config: Config,
+    config_stamp: config::Stamp,
+    apps: Rc<Vec<DesktopApp>>,
+    /// Open windows, read from niri each time the launcher opens.
+    windows: Vec<niri::Window>,
+    /// Everything searchable, rebuilt when apps or windows change.
+    entries: Rc<Vec<Entry>>,
+    fingerprint: Vec<(std::path::PathBuf, Option<SystemTime>)>,
+    indexing: bool,
+    history: History,
+    clipboard: Option<Clipboard>,
+    /// Clipboard history, newest first, refreshed after each copy.
+    clips: Rc<Vec<Clip>>,
+    /// Whether the next window opens on the clipboard history.
+    open_on_clipboard: bool,
+    window: Option<AnyWindowHandle>,
+    opening: bool,
+    hide_when_open: bool,
+}
+
+impl Launcher {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        // Forget a window the compositor closed under us.
+        cx.observe_window_closed_by_id();
+        let config = config::load();
+        let clipboard = config.clipboard.enabled.then(|| {
+            let (tx, rx) = async_channel::bounded::<()>(1);
+            let clipboard = Clipboard::start(config.clipboard.max_entries, config.clipboard.images, move || {
+                _ = tx.try_send(());
+            });
+            cx.spawn(async move |this, cx| {
+                while rx.recv().await.is_ok() {
+                    if this.update(cx, |this, cx| this.refresh_clips(cx)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+            clipboard
+        });
+        let clips = Rc::new(clipboard.as_ref().map(Clipboard::clips).unwrap_or_default());
+        let mut this = Self {
+            config,
+            config_stamp: config::stamp(),
+            apps: Rc::new(Vec::new()),
+            windows: Vec::new(),
+            entries: Rc::new(Vec::new()),
+            fingerprint: Vec::new(),
+            indexing: false,
+            history: History::load(),
+            clipboard,
+            clips,
+            open_on_clipboard: false,
+            window: None,
+            opening: false,
+            hide_when_open: false,
+        };
+        this.refresh_index(cx);
+        this
+    }
+
+    pub fn handle(&mut self, request: Request, cx: &mut Context<Self>) {
+        match request {
+            Request::Toggle if self.window.is_some() || self.opening => self.hide(cx),
+            Request::Toggle | Request::Show => self.show(cx),
+            Request::Clipboard => {
+                if self.clipboard.is_none() {
+                    eprintln!("rockhopper: clipboard history is turned off");
+                }
+                // An open launcher is replaced so it starts on the history.
+                self.hide(cx);
+                self.open_on_clipboard = true;
+                self.show(cx);
+            }
+            Request::Hide => self.hide(cx),
+            Request::Quit => {
+                crate::ipc::remove_socket();
+                cx.quit();
+            }
+        }
+    }
+
+    pub fn show(&mut self, cx: &mut Context<Self>) {
+        self.hide_when_open = false;
+        if self.window.is_some() || self.opening {
+            return;
+        }
+        let on_clipboard = std::mem::take(&mut self.open_on_clipboard) && self.clipboard.is_some();
+        let stamp = config::stamp();
+        if stamp != self.config_stamp {
+            self.config_stamp = stamp;
+            self.config = config::load();
+        }
+        self.refresh_index(cx);
+        self.windows = niri::windows();
+        self.rebuild_entries();
+        match self.config.appearance.theme {
+            ThemeChoice::System => Theme::sync_system_appearance(None, cx),
+            ThemeChoice::Light => Theme::change(ThemeMode::Light, None, cx),
+            ThemeChoice::Dark => Theme::change(ThemeMode::Dark, None, cx),
+        }
+
+        // Cover the whole output, so the backdrop can dim it and catch clicks
+        // outside the panel. The renderer cannot start at the zero size that
+        // would let the compositor pick, so open at the output's size, grown
+        // by the frame gpui-kit draws (see FRAME_INSET) and pulled back by
+        // negative margins so the frame lies off-screen.
+        let display = target_display(self.config.appearance.output.as_deref(), cx);
+        let output = display.as_ref().map_or(size(px(1920.), px(1080.)), |d| d.bounds().size);
+        let options = WindowOptions {
+            titlebar: None,
+            display_id: display.as_ref().map(|d| d.id()),
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: Point::default(),
+                size: size(output.width + FRAME_INSET * 2., output.height + FRAME_INSET * 2.),
+            })),
+            app_id: Some("rockhopper".into()),
+            window_background: WindowBackgroundAppearance::Transparent,
+            kind: WindowKind::LayerShell(LayerShellOptions {
+                namespace: "rockhopper".into(),
+                layer: Layer::Overlay,
+                anchor: Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
+                exclusive_zone: Some(px(-1.)),
+                margin: Some((-FRAME_INSET, -FRAME_INSET, -FRAME_INSET, -FRAME_INSET)),
+                keyboard_interactivity: KeyboardInteractivity::Exclusive,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Deferred: the view reads this launcher while it is built, which it
+        // cannot do inside this update.
+        self.opening = true;
+        let launcher = cx.entity();
+        cx.defer(move |cx| {
+            let view_launcher = launcher.clone();
+            let opened = cx.open_window(options, |window, cx| {
+                let view = cx.new(|cx| view::LauncherView::new(view_launcher, on_clipboard, window, cx));
+                // gpui-kit's root paints the theme background; the backdrop
+                // is ours to draw.
+                cx.new(|cx| Root::new(view, window, cx).bg(transparent_black()))
+            });
+            launcher.update(cx, |this, cx| {
+                this.opening = false;
+                match opened {
+                    Ok(handle) => {
+                        this.window = Some(handle.into());
+                        // Hidden while it was opening.
+                        if this.hide_when_open {
+                            this.hide_when_open = false;
+                            this.hide(cx);
+                        }
+                    }
+                    Err(err) => eprintln!("rockhopper: could not open the launcher window: {err:#}"),
+                }
+            });
+        });
+    }
+
+    pub fn hide(&mut self, cx: &mut Context<Self>) {
+        if self.opening {
+            self.hide_when_open = true;
+        }
+        let Some(handle) = self.window.take() else {
+            return;
+        };
+        // Deferred: the request may come from inside that window's own update.
+        cx.defer(move |cx| {
+            _ = handle.update(cx, |_, window, _| window.remove_window());
+        });
+    }
+
+    fn rebuild_entries(&mut self) {
+        self.entries = Rc::new(items::entries(&self.apps, &self.windows, self.clipboard.is_some()));
+    }
+
+    fn refresh_clips(&mut self, cx: &mut Context<Self>) {
+        if let Some(clipboard) = &self.clipboard {
+            self.clips = Rc::new(clipboard.clips());
+            cx.notify();
+        }
+    }
+
+    fn clip_image(&self, id: u64) -> Option<std::sync::Arc<Vec<u8>>> {
+        self.clipboard.as_ref()?.image(id)
+    }
+
+    fn copy_clip(&mut self, clip: &Clip, cx: &mut Context<Self>) {
+        if let Some(clipboard) = &self.clipboard
+            && let Err(err) = clipboard.copy(clip)
+        {
+            eprintln!("rockhopper: could not copy that entry: {err}");
+        }
+        self.history.record("rockhopper:clipboard", history::now());
+        self.hide(cx);
+    }
+
+    fn delete_clip(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(clipboard) = &self.clipboard {
+            clipboard.delete(id);
+        }
+        self.refresh_clips(cx);
+    }
+
+    fn clear_clips(&mut self, cx: &mut Context<Self>) {
+        if let Some(clipboard) = &self.clipboard {
+            clipboard.clear();
+        }
+        self.refresh_clips(cx);
+    }
+
+    /// Carry out `action` on `item`. Most actions close the launcher; those
+    /// that change the list in place leave it open.
+    fn perform(&mut self, item: &Item, action: Action, cx: &mut Context<Self>) {
+        let result = match (item, action) {
+            (Item::App(i), Action::Primary) => {
+                let app = &self.apps[*i];
+                launch::launch(app, &self.config)
+            }
+            (Item::App(i), Action::Desktop(n)) => {
+                let app = &self.apps[*i];
+                launch::launch_argv(app, &app.actions[n].argv, &self.config)
+            }
+            (Item::App(i), Action::CopyCommand) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(self.apps[*i].argv.join(" ")));
+                Ok(())
+            }
+            (Item::Window { window, .. }, Action::Primary) => niri::focus_window(window.id),
+            (Item::Window { app: Some(a), .. }, Action::NewInstance) => {
+                let app = &self.apps[*a];
+                launch::launch(app, &self.config).inspect(|()| self.history.record(&app.id, history::now()))
+            }
+            (Item::Window { window, .. }, Action::CloseWindow) => {
+                let closed = niri::close_window(window.id);
+                if closed.is_ok() {
+                    self.windows.retain(|w| w.id != window.id);
+                    self.rebuild_entries();
+                    cx.notify();
+                }
+                return report(closed, item, &self.apps);
+            }
+            (Item::Window { window, .. }, Action::CopyTitle) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(window.title.clone()));
+                Ok(())
+            }
+            (Item::System(cmd), Action::Primary) => cmd.run(&self.config),
+            (_, Action::Forget) => {
+                if let Some(key) = item.history_key(&self.apps) {
+                    self.history.forget(&key);
+                }
+                cx.notify();
+                return;
+            }
+            (item, action) => {
+                eprintln!("rockhopper: {action:?} does not apply to {item:?}");
+                return;
+            }
+        };
+        let launched = matches!(action, Action::Primary | Action::Desktop(_));
+        if result.is_ok()
+            && launched
+            && let Some(key) = item.history_key(&self.apps)
+        {
+            self.history.record(&key, history::now());
+        }
+        report(result, item, &self.apps);
+        self.hide(cx);
+    }
+
+    /// Rescan desktop entries in the background when their directories
+    /// changed since the last scan.
+    fn refresh_index(&mut self, cx: &mut Context<Self>) {
+        let dirs = apps::application_dirs();
+        let fingerprint = apps::fingerprint(&dirs);
+        if self.indexing || fingerprint == self.fingerprint {
+            return;
+        }
+        self.indexing = true;
+        let theme = icons::theme(self.config.icon_theme.as_deref());
+        cx.spawn(async move |this, cx| {
+            let started = std::time::Instant::now();
+            let found = cx
+                .background_spawn(async move {
+                    let mut found = apps::scan(&dirs, &apps::Env::current());
+                    icons::resolve_all(&mut found, theme.as_deref());
+                    found
+                })
+                .await;
+            eprintln!("rockhopper: indexed {} apps in {:?}", found.len(), started.elapsed());
+            _ = this.update(cx, |this, cx| {
+                this.apps = Rc::new(found);
+                this.rebuild_entries();
+                this.fingerprint = fingerprint;
+                this.indexing = false;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+}
+
+fn report(result: std::io::Result<()>, item: &Item, apps: &[DesktopApp]) {
+    if let Err(err) = result {
+        eprintln!("rockhopper: {}: {err}", item.title(apps));
+    }
+}
+
+/// The configured output, else the one niri says has focus, else the primary.
+fn target_display(configured: Option<&str>, cx: &gpui_kit::App) -> Option<Rc<dyn PlatformDisplay>> {
+    let by_name = |name: String| {
+        let uuid = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_DNS, name.as_bytes());
+        cx.displays().into_iter().find(|d| d.uuid().is_ok_and(|u| u == uuid))
+    };
+    configured
+        .map(str::to_owned)
+        .and_then(by_name)
+        .or_else(|| niri::focused_output().and_then(by_name))
+        .or_else(|| cx.primary_display())
+}
+
+trait ObserveWindowClosed {
+    fn observe_window_closed_by_id(&mut self);
+}
+
+impl ObserveWindowClosed for Context<'_, Launcher> {
+    fn observe_window_closed_by_id(&mut self) {
+        let this = self.weak_entity();
+        self.on_window_closed(move |cx, id| {
+            _ = this.update(cx, |this, _| {
+                if this.window.is_some_and(|w| w.window_id() == id) {
+                    this.window = None;
+                }
+            });
+        })
+        .detach();
+    }
+}

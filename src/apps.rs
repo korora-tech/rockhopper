@@ -25,6 +25,26 @@ pub struct App {
     pub icon: Option<String>,
     /// Resolved icon file, filled in by [`crate::icons`].
     pub icon_path: Option<PathBuf>,
+    /// `StartupWMClass`, which windows of this app may use as their app ID.
+    pub wm_class: Option<String>,
+    /// Desktop actions, such as "New Private Window", in `Actions=` order.
+    pub actions: Vec<DesktopAction>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DesktopAction {
+    pub name: String,
+    pub argv: Vec<String>,
+}
+
+impl App {
+    /// Whether a window with Wayland app ID `app_id` belongs to this app.
+    pub fn owns_window(&self, app_id: &str) -> bool {
+        let stem = self.id.strip_suffix(".desktop").unwrap_or(&self.id);
+        stem.eq_ignore_ascii_case(app_id)
+            || self.wm_class.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(app_id))
+            || self.argv.first().is_some_and(|p| p.rsplit('/').next() == Some(app_id))
+    }
 }
 
 /// The `applications` directories in XDG precedence order: user data first.
@@ -188,16 +208,18 @@ fn collect_desktop_files(
 }
 
 pub fn parse(id: &str, path: &Path, text: &str, env: &Env) -> Option<App> {
-    let group = desktop_entry_group(text);
+    let groups = groups(text);
+    let group = groups.get("Desktop Entry")?;
     let get = |key: &str| group.get(key).map(|v| unescape(v));
     let get_bool = |key: &str| group.get(key).is_some_and(|v| v.trim() == "true");
-    let localized = |key: &str| {
+    let localized_in = |group: &HashMap<String, String>, key: &str| {
         env.locales
             .iter()
             .find_map(|l| group.get(&format!("{key}[{l}]")))
             .or_else(|| group.get(key))
             .map(|v| unescape(v))
     };
+    let localized = |key: &str| localized_in(group, key);
 
     if get("Type").as_deref() != Some("Application") || get_bool("NoDisplay") || get_bool("Hidden")
     {
@@ -223,6 +245,17 @@ pub fn parse(id: &str, path: &Path, text: &str, env: &Env) -> Option<App> {
     let name = localized("Name")?;
     let icon = get("Icon").filter(|i| !i.is_empty());
     let argv = expand_exec(&get("Exec")?, &name, icon.as_deref(), path)?;
+    let actions = listed("Actions")
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|action| {
+            let group = groups.get(&format!("Desktop Action {action}"))?;
+            let name = localized_in(group, "Name")?;
+            let exec = group.get("Exec").map(|v| unescape(v))?;
+            let argv = expand_exec(&exec, &name, icon.as_deref(), path)?;
+            Some(DesktopAction { name, argv })
+        })
+        .collect();
 
     Some(App {
         id: id.to_owned(),
@@ -235,28 +268,35 @@ pub fn parse(id: &str, path: &Path, text: &str, env: &Env) -> Option<App> {
         cwd: get("Path").filter(|p| !p.is_empty()).map(PathBuf::from),
         icon,
         icon_path: None,
+        wm_class: get("StartupWMClass").filter(|c| !c.is_empty()),
+        actions,
     })
 }
 
-/// Raw key/value pairs of the `[Desktop Entry]` group; later groups (such as
-/// desktop actions) are ignored.
-fn desktop_entry_group(text: &str) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    let mut in_entry = false;
+/// Raw key/value pairs by group name, such as `Desktop Entry` or
+/// `Desktop Action new-window`. The first value of a repeated key wins.
+fn groups(text: &str) -> HashMap<String, HashMap<String, String>> {
+    let mut groups: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut current: Option<String> = None;
     for line in text.lines() {
         let line = line.trim_start();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if line.starts_with('[') {
-            in_entry = line.trim_end() == "[Desktop Entry]";
+        if let Some(name) = line.trim_end().strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            current = Some(name.to_owned());
+            groups.entry(name.to_owned()).or_default();
             continue;
         }
-        if in_entry && let Some((k, v)) = line.split_once('=') {
-            map.entry(k.trim().to_owned()).or_insert_with(|| v.trim().to_owned());
+        if let (Some(group), Some((k, v))) = (&current, line.split_once('=')) {
+            groups
+                .get_mut(group)
+                .expect("group inserted on its header")
+                .entry(k.trim().to_owned())
+                .or_insert_with(|| v.trim().to_owned());
         }
     }
-    map
+    groups
 }
 
 /// String-value escapes: `\s`, `\n`, `\t`, `\r` and `\\`. `\;` is kept for
@@ -428,9 +468,32 @@ mod tests {
     }
 
     #[test]
-    fn ignores_action_groups() {
-        let app = entry("Name=A\nExec=a\n[Desktop Action new]\nName=B\nExec=b\n").unwrap();
-        assert_eq!((app.name.as_str(), app.argv[0].as_str()), ("A", "a"));
+    fn desktop_actions() {
+        let app = entry(
+            "Name=A\nExec=a %u\nActions=new;private;missing;\n[Desktop Action new]\nName=New Window\nName[de]=Neues Fenster\nExec=a --new-window %u\n[Desktop Action private]\nName=Private\nExec=a --private\n",
+        )
+        .unwrap();
+        assert_eq!((app.name.as_str(), app.argv.as_slice()), ("A", ["a".to_string()].as_slice()));
+        let actions: Vec<_> = app.actions.iter().map(|a| (a.name.as_str(), a.argv.join(" "))).collect();
+        assert_eq!(
+            actions,
+            [("Neues Fenster", "a --new-window".into()), ("Private", "a --private".into())]
+        );
+    }
+
+    #[test]
+    fn window_ownership() {
+        let app = parse(
+            "org.mozilla.firefox.desktop",
+            Path::new("/f"),
+            "[Desktop Entry]\nType=Application\nName=Firefox\nExec=/usr/bin/firefox\nStartupWMClass=firefox-nightly\n",
+            &env(),
+        )
+        .unwrap();
+        assert!(app.owns_window("org.mozilla.firefox"));
+        assert!(app.owns_window("Firefox-Nightly"));
+        assert!(app.owns_window("firefox"));
+        assert!(!app.owns_window("ghostty"));
     }
 
     #[test]

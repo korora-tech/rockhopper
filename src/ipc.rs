@@ -15,6 +15,8 @@ pub enum Request {
     Show,
     Hide,
     Quit,
+    /// Open on the clipboard history.
+    Clipboard,
 }
 
 impl Request {
@@ -24,6 +26,7 @@ impl Request {
             "show" => Self::Show,
             "hide" => Self::Hide,
             "quit" => Self::Quit,
+            "clipboard" => Self::Clipboard,
             _ => return None,
         })
     }
@@ -34,6 +37,7 @@ impl Request {
             Self::Show => "show",
             Self::Hide => "hide",
             Self::Quit => "quit",
+            Self::Clipboard => "clipboard",
         }
     }
 }

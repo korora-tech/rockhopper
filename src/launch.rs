@@ -36,6 +36,16 @@ pub fn command_line(app: &App, config: &Config, systemd_run: bool) -> Vec<String
 }
 
 pub fn launch(app: &App, config: &Config) -> std::io::Result<()> {
+    launch_argv(app, &app.argv, config)
+}
+
+/// Start `app` with another command line, such as a desktop action's.
+pub fn launch_argv(app: &App, argv: &[String], config: &Config) -> std::io::Result<()> {
+    let app = App {
+        argv: argv.to_vec(),
+        ..app.clone()
+    };
+    let app = &app;
     let argv = command_line(app, config, has_systemd_run());
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..])
@@ -107,6 +117,8 @@ mod tests {
             cwd: None,
             icon: None,
             icon_path: None,
+            wm_class: None,
+            actions: vec![],
         }
     }
 

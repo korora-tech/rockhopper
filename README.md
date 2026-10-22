@@ -1,6 +1,6 @@
 # Rockhopper
 
-A native launcher for Wayland, built with GPUI and [gpui-kit](https://github.com/longbridge/gpui-kit). Press a key, and a large search box appears over the focused output. Type, and your installed applications appear ranked as you go. Rockhopper learns which apps you open, so they rise in the results.
+A native launcher for Wayland, built with GPUI and [gpui-kit](https://github.com/longbridge/gpui-kit). Press a key, and a large search box appears over the focused output. Type, and your apps, open windows and system commands appear ranked as you go. Rockhopper learns what you open, so it rises in the results. It also keeps an encrypted clipboard history.
 
 Rockhopper needs a compositor that supports wlr layer-shell, such as niri, Sway, Hyprland or KDE. It does not run on GNOME.
 
@@ -18,6 +18,7 @@ Rockhopper runs as a small background process, so it opens immediately. The firs
 | `rockhopper` / `rockhopper toggle` | Open the launcher, or close it if it is open. Starts Rockhopper if it is not running. |
 | `rockhopper show` | Open the launcher. Starts Rockhopper if it is not running. |
 | `rockhopper hide` | Close the launcher. |
+| `rockhopper clipboard` | Open on the clipboard history. Starts Rockhopper if it is not running. |
 | `rockhopper daemon` | Run without opening, for autostart. Exits quietly if Rockhopper is already running. |
 | `rockhopper quit` | Stop Rockhopper. |
 
@@ -28,6 +29,7 @@ spawn-at-startup "rockhopper" "daemon"
 
 binds {
     Mod+Space { spawn "rockhopper"; }
+    Mod+Shift+V { spawn "rockhopper" "clipboard"; }
 }
 ```
 
@@ -37,11 +39,26 @@ Starting Rockhopper from the compositor gives it your session's `PATH` and `XDG_
 
 | Key | Action |
 |---|---|
-| type | Search apps by name, generic name, keywords or program name |
-| `↓` `↑`, `ctrl-n` `ctrl-p`, `ctrl-j` `ctrl-k`, `tab` `shift-tab` | Move the selection |
-| `enter` | Open the selected app |
-| `esc` | Clear the search, or close if it is empty |
+| type | Search apps, open windows and commands |
+| `↓` `↑`, `ctrl-n` `ctrl-p`, `tab` `shift-tab` | Move the selection |
+| `enter` | Open the app, switch to the window or run the command |
+| `ctrl-k` | Show every action for the selected result |
+| `esc` | Close the actions, clear the search, leave the clipboard history, or close |
 | click outside | Close |
+
+### Results
+
+| Result | `enter` | More with `ctrl-k` |
+|---|---|---|
+| Application | Open it | Its desktop actions (such as New Private Window), Copy Command, Reset Ranking |
+| Window | Switch to it (niri) | Open a new window of its app, Close Window, Copy Title |
+| Lock Screen, Suspend | Run it | |
+| Log Out, Restart, Shut Down | Press `enter` twice: the first press asks for confirmation | |
+| Clipboard History | Open the clipboard history | |
+
+Windows come from niri's IPC and show which app and workspace they belong to. On other compositors, no windows are listed.
+
+Lock Screen runs `loginctl lock-session`, which your locker must listen for (for example through `swayidle` or `hypridle`). Log Out uses niri's quit action, or `loginctl terminate-session` elsewhere. Both can be replaced in the config.
 
 Ranking is fuzzy, using the [nucleo](https://github.com/helix-editor/nucleo) matcher. Names that start with what you typed rank higher. Apps you open often or recently get a boost that fades over weeks. The history lives in `$XDG_STATE_HOME/rockhopper/history.json`.
 
@@ -54,6 +71,17 @@ Each time the launcher opens, Rockhopper checks whether those directories change
 Apps start detached from Rockhopper. When `systemd-run` is available, each app runs in its own user scope named `app-rockhopper-<app id>-<random>.scope`, so stopping or restarting Rockhopper never closes apps you launched. Apps marked `Terminal=true` start through the `terminal` command from the config.
 
 Icons come from your icon theme: the configured `icon_theme`, otherwise the GTK setting, then `hicolor`. Apps without an icon get a coloured initial.
+
+## Clipboard history
+
+Rockhopper watches the clipboard through the wlr data-control protocol (niri, Sway, Hyprland and KDE support it) and keeps the last 200 copies: text, and PNG images. Open it with **Clipboard History** in the launcher or with `rockhopper clipboard`. It lists your copies newest first, with a preview of the selected one; typing searches them. `enter` puts the selected entry back on the clipboard, ready to paste. `ctrl-k` offers Delete Entry and Delete All Entries; Delete All needs a second `enter`.
+
+- **Secrets are skipped.** Copies that password managers mark as secret (the `x-kde-passwordManagerHint` type that KeePassXC and others set) are never recorded.
+- **Encrypted at rest.** Each entry is stored in `$XDG_STATE_HOME/rockhopper/clipboard` encrypted with XChaCha20-Poly1305. The 256-bit key is random, created on first use, and kept only in your keyring (the freedesktop Secret Service: GNOME Keyring, KWallet, KeePassXC…) as **Rockhopper: clipboard history key**. Files are readable only by you.
+- **Without a keyring, nothing is written.** If the keyring cannot be reached, the history stays in memory and is gone when Rockhopper stops.
+- **A lost key does not silently delete history.** A `key.check` file records which key wrote the history. If the keyring hands back a different key (or a new one after the old was deleted), Rockhopper leaves the history on disk unread, keeps new copies in memory only, and says so on stderr. Restore the key, or delete `$XDG_STATE_HOME/rockhopper/clipboard` (or use Delete All Entries) to start over.
+- **Delete All Entries removes everything on disk**, including history that has not been loaded yet because the keyring is still locked.
+- Repeated copies move to the top instead of appearing twice. Text over 1 MiB and images over 32 MiB are not recorded.
 
 ## Configuration
 
@@ -70,6 +98,13 @@ terminal: [xdg-terminal-exec]   # prefix for Terminal=true apps
 launch:
   systemd_scope: true
 icon_theme: Papirus-Dark
+system:
+  lock: [loginctl, lock-session]     # replace the Lock Screen command
+  logout: [niri, msg, action, quit]  # replace the Log Out command
+clipboard:           # read when Rockhopper starts
+  enabled: true
+  max_entries: 200
+  images: true
 ```
 
 On niri, Rockhopper opens on the focused output, which it asks niri for over `$NIRI_SOCKET`. On other compositors it opens on the primary output unless `appearance.output` is set.
@@ -102,4 +137,4 @@ nix develop -c cargo test
 nix develop -c cargo run -- show
 ```
 
-GPUI reports layer-shell surfaces as client-decorated, so gpui-kit wraps them in its window frame. Rockhopper makes its overlay 21px larger than the output on each side and moves it back with negative margins, so that frame sits off-screen. See `FRAME_INSET` in `src/ui.rs`.
+GPUI reports layer-shell surfaces as client-decorated, so gpui-kit wraps them in its window frame. Rockhopper makes its overlay 21px larger than the output on each side and moves it back with negative margins, so that frame sits off-screen. See `FRAME_INSET` in `src/ui/mod.rs`.

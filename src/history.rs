@@ -49,6 +49,12 @@ impl History {
         self.save();
     }
 
+    pub fn forget(&mut self, id: &str) {
+        if self.items.remove(id).is_some() {
+            self.save();
+        }
+    }
+
     /// Frecency: visit count weighted by how recently the item was last used,
     /// in the spirit of Firefox's URL bar. Zero for unknown items.
     pub fn frecency(&self, id: &str, now: u64) -> f32 {
