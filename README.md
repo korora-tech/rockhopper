@@ -121,26 +121,65 @@ clipboard:           # read when Rockhopper starts
 
 On niri, Rockhopper opens on the focused output, which it asks niri for over `$NIRI_SOCKET`. On other compositors it opens on the primary output unless `appearance.output` is set.
 
+## Installing with Nix
+
+The flake provides:
+
+| Output | What it is |
+|---|---|
+| `packages.<system>.default` (also `.rockhopper`) | Rockhopper, built with this flake's nixpkgs |
+| `overlays.default` | Adds `pkgs.rockhopper`, built with *your* nixpkgs |
+| `homeModules.default` | The Home Manager module (`homeManagerModules.default` is the same, under the older name) |
+| `apps.<system>.default` | `nix run github:korora-tech/rockhopper` |
+
+Rockhopper needs Rust 1.92 or newer, so a nixpkgs from nixos-26.05 or nixos-unstable. To try it without installing:
+
+```sh
+nix run github:korora-tech/rockhopper
+```
+
 ### Home Manager
 
 ```nix
 {
-  inputs.rockhopper.url = "github:korora-tech/rockhopper";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    rockhopper = {
+      url = "github:korora-tech/rockhopper";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
 
-  # in your Home Manager configuration:
-  imports = [ inputs.rockhopper.homeManagerModules.default ];
-
-  programs.rockhopper = {
-    enable = true;
-    settings = {
-      appearance.theme = "dark";
-      terminal = [ "ghostty" "-e" ];
+  outputs = { nixpkgs, home-manager, rockhopper, ... }: {
+    homeConfigurations.you = home-manager.lib.homeManagerConfiguration {
+      # The overlay builds Rockhopper with this nixpkgs; without it, the
+      # module uses the flake's own package.
+      pkgs = import nixpkgs {
+        system = "x86_64-linux";
+        overlays = [ rockhopper.overlays.default ];
+      };
+      modules = [
+        rockhopper.homeModules.default
+        {
+          programs.rockhopper = {
+            enable = true;
+            settings = {
+              appearance.theme = "dark";
+              terminal = [ "ghostty" "-e" ];
+            };
+          };
+        }
+      ];
     };
   };
 }
 ```
 
-`settings` is written to `config.yaml`. `programs.rockhopper.systemd.enable` runs `rockhopper daemon` as a user service bound to `graphical-session.target`. That service only sees the systemd user environment, so make sure `PATH` and `XDG_DATA_DIRS` are imported into it, or use your compositor's autostart instead.
+`settings` is written to `config.yaml`, in the format described above. `programs.rockhopper.package` picks the package; it defaults to `pkgs.rockhopper` when the overlay is applied. `programs.rockhopper.systemd.enable` runs `rockhopper daemon` as a user service bound to `graphical-session.target`. That service only sees the systemd user environment, so make sure `PATH` and `XDG_DATA_DIRS` are imported into it, or use your compositor's autostart instead.
 
 ## Development
 
