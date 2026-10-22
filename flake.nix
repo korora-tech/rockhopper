@@ -21,18 +21,7 @@
       ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
-      buildInputs =
-        pkgs: with pkgs; [
-          fontconfig
-          freetype
-          libxcb
-          libxkbcommon
-          vulkan-loader
-          vulkan-headers
-          wayland
-        ];
-
-      # GPUI dlopens Vulkan, Wayland and xkbcommon at runtime.
+      # GPUI dlopens these at runtime; the dev shell needs them on the path.
       runtimeLibraryPath =
         pkgs:
         pkgs.lib.makeLibraryPath (
@@ -43,48 +32,30 @@
             wayland
           ]
         );
+
+      homeModule = import ./nix/home-manager.nix self;
     in
     {
-      packages = forAllSystems (pkgs: {
-        default = pkgs.rustPlatform.buildRustPackage {
-          pname = "rockhopper";
-          version = "0.1.0";
-          src = pkgs.lib.fileset.toSource {
-            root = ./.;
-            fileset = pkgs.lib.fileset.unions [
-              ./Cargo.toml
-              ./Cargo.lock
-              ./src
-            ];
-          };
-
-          cargoLock.lockFile = ./Cargo.lock;
-
-          nativeBuildInputs = with pkgs; [
-            makeWrapper
-            pkg-config
-          ];
-          buildInputs = buildInputs pkgs;
-
-          postFixup = ''
-            wrapProgram $out/bin/rockhopper \
-              --prefix LD_LIBRARY_PATH : ${runtimeLibraryPath pkgs}
-          '';
-
-          meta = {
-            description = "A native GPUI launcher for Wayland";
-            license = pkgs.lib.licenses.asl20;
-            mainProgram = "rockhopper";
-            platforms = systems;
-          };
-        };
+      packages = forAllSystems (pkgs: rec {
+        rockhopper = pkgs.callPackage ./nix/package.nix { };
+        default = rockhopper;
       });
+
+      # Builds Rockhopper with the consumer's nixpkgs, as `pkgs.rockhopper`.
+      overlays.default = final: _prev: {
+        rockhopper = final.callPackage ./nix/package.nix { };
+      };
 
       apps = forAllSystems (pkgs: {
         default = {
           type = "app";
           program = nixpkgs.lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+          meta.description = "Open the Rockhopper launcher";
         };
+      });
+
+      checks = forAllSystems (pkgs: {
+        package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
       });
 
       devShells = forAllSystems (pkgs: {
@@ -101,7 +72,9 @@
         };
       });
 
-      homeManagerModules.default = import ./nix/home-manager.nix self;
+      homeModules.default = homeModule;
+      # The older name for Home Manager modules, kept for existing configs.
+      homeManagerModules.default = homeModule;
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt);
     };

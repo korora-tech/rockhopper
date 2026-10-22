@@ -19,8 +19,9 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-      defaultText = lib.literalExpression "rockhopper.packages.\${system}.default";
+      # With the overlay applied, built with the configuration's own nixpkgs.
+      default = pkgs.rockhopper or self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+      defaultText = lib.literalExpression "pkgs.rockhopper or rockhopper.packages.\${system}.default";
       description = "The Rockhopper package.";
     };
 
