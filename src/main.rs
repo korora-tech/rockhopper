@@ -1,6 +1,7 @@
 mod apps;
 mod clipboard;
 mod config;
+mod emoji;
 mod history;
 mod icons;
 mod ipc;
@@ -21,10 +22,11 @@ const USAGE: &str = "usage: rockhopper [toggle|show|hide|quit|daemon]
   show     open the launcher
   hide     close the launcher
   clipboard  open on the clipboard history
+  emoji    open on the emoji picker
   quit     stop the running launcher
   daemon   run without opening, for autostart
 
-toggle, show and clipboard start the launcher when it is not running yet.";
+toggle, show, clipboard and emoji start the launcher when it is not running yet.";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -44,7 +46,9 @@ fn main() {
             match ipc::send(request) {
                 Ok(true) => {}
                 Ok(false) => match request {
-                    Request::Toggle | Request::Show | Request::Clipboard => run_daemon(Some(request)),
+                    Request::Toggle | Request::Show | Request::Clipboard | Request::Emoji => {
+                        run_daemon(Some(request))
+                    }
                     Request::Hide | Request::Quit => {}
                 },
                 Err(err) => {

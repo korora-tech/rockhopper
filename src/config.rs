@@ -17,6 +17,14 @@ pub struct Config {
     pub icon_theme: Option<String>,
     pub system: System,
     pub clipboard: ClipboardConfig,
+    pub emoji: EmojiConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct EmojiConfig {
+    /// Applied to every emoji that has skin tones.
+    pub skin_tone: crate::emoji::SkinTone,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -89,6 +97,7 @@ impl Default for Config {
             icon_theme: None,
             system: System::default(),
             clipboard: ClipboardConfig::default(),
+            emoji: EmojiConfig::default(),
         }
     }
 }
@@ -183,6 +192,12 @@ mod tests {
         let c = parse("%YAML 1.1\n---\nappearance:\n  theme: dark\n  width: 760\nterminal:\n- ghostty\n- -e\n").unwrap();
         assert_eq!(c.appearance.width, 760.0);
         assert_eq!(c.terminal, ["ghostty", "-e"]);
+    }
+
+    #[test]
+    fn skin_tone() {
+        let c = parse("emoji:\n  skin_tone: medium-dark\n").unwrap();
+        assert_eq!(c.emoji.skin_tone, crate::emoji::SkinTone::MediumDark);
     }
 
     #[test]

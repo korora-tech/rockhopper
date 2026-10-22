@@ -17,11 +17,14 @@ pub enum Item {
     System(SystemCommand),
     /// Opens the clipboard history.
     Clipboard,
+    /// Opens the emoji picker.
+    Emoji,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Symbol {
     Clipboard,
+    Emoji,
     Text,
     Image,
     Lock,
@@ -102,10 +105,19 @@ pub fn entries(apps: &[App], windows: &[Window], clipboard: bool) -> Vec<Entry> 
             key: Some("rockhopper:clipboard".into()),
         },
     });
+    let emoji_entry = Entry {
+        item: Item::Emoji,
+        candidate: Candidate {
+            name: "Search Emoji".into(),
+            secondary: vec!["emoji".into(), "emoticon".into(), "smiley".into()],
+            key: Some("rockhopper:emoji".into()),
+        },
+    };
     app_entries
         .chain(window_entries)
         .chain(system_entries)
         .chain(clipboard_entry)
+        .chain([emoji_entry])
         .collect()
 }
 
@@ -116,6 +128,7 @@ impl Item {
             Self::Window { window, .. } => window.title.clone(),
             Self::System(cmd) => cmd.name().into(),
             Self::Clipboard => "Clipboard History".into(),
+            Self::Emoji => "Search Emoji".into(),
         }
     }
 
@@ -132,6 +145,7 @@ impl Item {
             }
             Self::System(_) => None,
             Self::Clipboard => Some("Search what you copied".into()),
+            Self::Emoji => Some("Find an emoji and copy it".into()),
         }
     }
 
@@ -141,7 +155,7 @@ impl Item {
             Self::App(i) if apps[*i].terminal => "Terminal",
             Self::App(_) => "Application",
             Self::Window { .. } => "Window",
-            Self::System(_) | Self::Clipboard => "Command",
+            Self::System(_) | Self::Clipboard | Self::Emoji => "Command",
         }
     }
 
@@ -162,6 +176,7 @@ impl Item {
                 SystemCommand::PowerOff => Symbol::Power,
             }),
             Self::Clipboard => ItemIcon::Symbol(Symbol::Clipboard),
+            Self::Emoji => ItemIcon::Symbol(Symbol::Emoji),
         }
     }
 
@@ -171,7 +186,7 @@ impl Item {
             Self::App(_) => "Open",
             Self::Window { .. } => "Switch to",
             Self::System(_) => "Run",
-            Self::Clipboard => "Open",
+            Self::Clipboard | Self::Emoji => "Open",
         }
     }
 
@@ -181,6 +196,7 @@ impl Item {
             Self::Window { .. } => None,
             Self::System(cmd) => Some(cmd.key().into()),
             Self::Clipboard => Some("rockhopper:clipboard".into()),
+            Self::Emoji => Some("rockhopper:emoji".into()),
         }
     }
 
@@ -208,7 +224,7 @@ impl Item {
                 actions.push(ActionDef::new(Action::CloseWindow, "Close Window"));
                 actions.push(ActionDef::new(Action::CopyTitle, "Copy Title"));
             }
-            Self::System(_) | Self::Clipboard => {}
+            Self::System(_) | Self::Clipboard | Self::Emoji => {}
         }
         if self
             .history_key(apps)

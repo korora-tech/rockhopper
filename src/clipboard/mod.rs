@@ -85,6 +85,16 @@ impl Clipboard {
         Ok(())
     }
 
+    /// Put text on the clipboard.
+    pub fn copy_text(&self, text: &str) -> std::io::Result<()> {
+        let watcher = self
+            .watcher
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("clipboard access is unavailable"))?;
+        watcher.set_text(text);
+        Ok(())
+    }
+
     pub fn delete(&self, id: u64) {
         self.store.lock().expect("clipboard store").delete(id);
     }

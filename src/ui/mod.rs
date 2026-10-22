@@ -18,6 +18,7 @@ use gpui_kit::*;
 
 use crate::apps::{self, App as DesktopApp};
 use crate::clipboard::{Clip, Clipboard};
+use crate::emoji::{self, Emoji};
 use crate::config::{self, Config, ThemeChoice};
 use crate::history::{self, History};
 use crate::ipc::Request;
@@ -46,8 +47,10 @@ pub struct Launcher {
     clipboard: Option<Clipboard>,
     /// Clipboard history, newest first, refreshed after each copy.
     clips: Rc<Vec<Clip>>,
-    /// Whether the next window opens on the clipboard history.
-    open_on_clipboard: bool,
+    /// Every emoji, in the configured skin tone.
+    emojis: Rc<Vec<Emoji>>,
+    /// Where the next window opens.
+    open_on: Start,
     window: Option<AnyWindowHandle>,
     opening: bool,
     hide_when_open: bool,
@@ -74,6 +77,7 @@ impl Launcher {
             clipboard
         });
         let clips = Rc::new(clipboard.as_ref().map(Clipboard::clips).unwrap_or_default());
+        let emojis = Rc::new(emoji::all(config.emoji.skin_tone));
         let mut this = Self {
             config,
             config_stamp: config::stamp(),
@@ -85,7 +89,8 @@ impl Launcher {
             history: History::load(),
             clipboard,
             clips,
-            open_on_clipboard: false,
+            emojis,
+            open_on: Start::Search,
             window: None,
             opening: false,
             hide_when_open: false,
@@ -98,13 +103,18 @@ impl Launcher {
         match request {
             Request::Toggle if self.window.is_some() || self.opening => self.hide(cx),
             Request::Toggle | Request::Show => self.show(cx),
-            Request::Clipboard => {
-                if self.clipboard.is_none() {
-                    eprintln!("rockhopper: clipboard history is turned off");
-                }
-                // An open launcher is replaced so it starts on the history.
+            Request::Clipboard | Request::Emoji => {
+                let start = if request == Request::Clipboard {
+                    if self.clipboard.is_none() {
+                        eprintln!("rockhopper: clipboard history is turned off");
+                    }
+                    Start::Clipboard
+                } else {
+                    Start::Emoji
+                };
+                // An open launcher is replaced so it starts there.
                 self.hide(cx);
-                self.open_on_clipboard = true;
+                self.open_on = start;
                 self.show(cx);
             }
             Request::Hide => self.hide(cx),
@@ -120,11 +130,18 @@ impl Launcher {
         if self.window.is_some() || self.opening {
             return;
         }
-        let on_clipboard = std::mem::take(&mut self.open_on_clipboard) && self.clipboard.is_some();
+        let start = match std::mem::replace(&mut self.open_on, Start::Search) {
+            Start::Clipboard if self.clipboard.is_none() => Start::Search,
+            start => start,
+        };
         let stamp = config::stamp();
         if stamp != self.config_stamp {
             self.config_stamp = stamp;
-            self.config = config::load();
+            let config = config::load();
+            if config.emoji.skin_tone != self.config.emoji.skin_tone {
+                self.emojis = Rc::new(emoji::all(config.emoji.skin_tone));
+            }
+            self.config = config;
         }
         self.refresh_index(cx);
         self.windows = niri::windows();
@@ -169,7 +186,7 @@ impl Launcher {
         cx.defer(move |cx| {
             let view_launcher = launcher.clone();
             let opened = cx.open_window(options, |window, cx| {
-                let view = cx.new(|cx| view::LauncherView::new(view_launcher, on_clipboard, window, cx));
+                let view = cx.new(|cx| view::LauncherView::new(view_launcher, start, window, cx));
                 // gpui-kit's root paints the theme background; the backdrop
                 // is ours to draw.
                 cx.new(|cx| Root::new(view, window, cx).bg(transparent_black()))
@@ -226,6 +243,22 @@ impl Launcher {
             eprintln!("rockhopper: could not copy that entry: {err}");
         }
         self.history.record("rockhopper:clipboard", history::now());
+        self.hide(cx);
+    }
+
+    /// Copy `text`, through the clipboard watcher when there is one so it
+    /// outlives this window, and close.
+    fn copy_text(&mut self, text: &str, history_key: Option<String>, cx: &mut Context<Self>) {
+        let copied = match &self.clipboard {
+            Some(clipboard) => clipboard.copy_text(text),
+            None => Err(std::io::Error::other("no clipboard watcher")),
+        };
+        if copied.is_err() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
+        }
+        if let Some(key) = history_key {
+            self.history.record(&key, history::now());
+        }
         self.hide(cx);
     }
 
@@ -331,6 +364,14 @@ impl Launcher {
         })
         .detach();
     }
+}
+
+/// Where a window opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Start {
+    Search,
+    Clipboard,
+    Emoji,
 }
 
 fn report(result: std::io::Result<()>, item: &Item, apps: &[DesktopApp]) {

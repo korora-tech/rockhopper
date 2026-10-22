@@ -17,6 +17,8 @@ pub enum Request {
     Quit,
     /// Open on the clipboard history.
     Clipboard,
+    /// Open on the emoji picker.
+    Emoji,
 }
 
 impl Request {
@@ -27,6 +29,7 @@ impl Request {
             "hide" => Self::Hide,
             "quit" => Self::Quit,
             "clipboard" => Self::Clipboard,
+            "emoji" => Self::Emoji,
             _ => return None,
         })
     }
@@ -38,6 +41,7 @@ impl Request {
             Self::Hide => "hide",
             Self::Quit => "quit",
             Self::Clipboard => "clipboard",
+            Self::Emoji => "emoji",
         }
     }
 }
