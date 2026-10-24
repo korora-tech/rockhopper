@@ -346,7 +346,7 @@ fn write_all(fd: OwnedFd, data: &[u8]) {
                 };
                 let mut pfd = libc::pollfd { fd: raw, events: libc::POLLOUT, revents: 0 };
                 // SAFETY: one valid pollfd.
-                if unsafe { libc::poll(&mut pfd, 1, left.as_millis().min(i32::MAX as u128) as i32) } <= 0 {
+                if unsafe { libc::poll(&mut pfd, 1, left.as_nanos().div_ceil(1_000_000).min(i32::MAX as u128) as i32) } <= 0 {
                     return;
                 }
             }
