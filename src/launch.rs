@@ -6,11 +6,21 @@ use std::process::{Command, Stdio};
 use crate::apps::App;
 use crate::config::Config;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemdRunAvailability {
+    Available,
+    Unavailable,
+}
+
 /// The full command line for `app`, including the terminal and systemd scope
 /// wrappers.
-pub fn command_line(app: &App, config: &Config, systemd_run: bool) -> Vec<String> {
+pub fn command_line(
+    app: &App,
+    config: &Config,
+    systemd_run: SystemdRunAvailability,
+) -> Vec<String> {
     let mut argv = Vec::new();
-    if config.launch.systemd_scope && systemd_run {
+    if config.launch.systemd_scope && systemd_run == SystemdRunAvailability::Available {
         // Unit names follow the XDG convention for launched apps:
         // app-<launcher>-<application id>-<random>.scope
         argv.extend(
@@ -78,9 +88,14 @@ pub fn launch_argv(app: &App, argv: &[String], config: &Config) -> std::io::Resu
     Ok(())
 }
 
-fn has_systemd_run() -> bool {
-    std::env::var_os("PATH")
+fn has_systemd_run() -> SystemdRunAvailability {
+    if std::env::var_os("PATH")
         .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("systemd-run").is_file()))
+    {
+        SystemdRunAvailability::Available
+    } else {
+        SystemdRunAvailability::Unavailable
+    }
 }
 
 /// Desktop file ID without `.desktop`, limited to characters systemd allows
@@ -129,16 +144,23 @@ mod tests {
             terminal: vec!["ghostty".into(), "-e".into()],
             ..Config::default()
         };
-        assert_eq!(command_line(&app(false), &config, false), ["htop"]);
         assert_eq!(
-            command_line(&app(true), &config, false),
+            command_line(&app(false), &config, SystemdRunAvailability::Unavailable),
+            ["htop"]
+        );
+        assert_eq!(
+            command_line(&app(true), &config, SystemdRunAvailability::Unavailable),
             ["ghostty", "-e", "htop"]
         );
     }
 
     #[test]
     fn systemd_scope_wraps() {
-        let argv = command_line(&app(false), &Config::default(), true);
+        let argv = command_line(
+            &app(false),
+            &Config::default(),
+            SystemdRunAvailability::Available,
+        );
         assert_eq!(argv[0], "systemd-run");
         let unit = argv.iter().find(|a| a.starts_with("--unit=")).unwrap();
         assert!(

@@ -213,15 +213,25 @@ pub fn path() -> Option<PathBuf> {
         .map(|d| d.join("rockhopper/config.yaml"))
 }
 
+/// A file's resolved path and modification time for cheap change detection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileStamp {
+    pub path: PathBuf,
+    pub modified: Option<SystemTime>,
+}
+
 /// Identifies a version of the config file. Home Manager makes the file a
 /// symlink into the Nix store, where every mtime is 1, so the resolved path
 /// is part of it: each generation resolves to a new store path.
-pub type Stamp = Option<(PathBuf, Option<SystemTime>)>;
+pub type Stamp = Option<FileStamp>;
 
 pub fn stamp() -> Stamp {
     let real = std::fs::canonicalize(path()?).ok()?;
     let mtime = std::fs::metadata(&real).and_then(|m| m.modified()).ok();
-    Some((real, mtime))
+    Some(FileStamp {
+        path: real,
+        modified: mtime,
+    })
 }
 
 /// A missing file means defaults; a broken one is reported and also means
