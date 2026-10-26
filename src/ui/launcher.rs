@@ -376,7 +376,25 @@ impl Launcher {
         let result = match (item, action) {
             (Item::App(i), Action::Primary) => {
                 let app = &self.apps[*i];
+                let policy = if self.config.launcher.focus_existing {
+                    items::AppLaunchPolicy::PreferExisting
+                } else {
+                    items::AppLaunchPolicy::AlwaysLaunch
+                };
+                match items::choose_app_open(
+                    app,
+                    &self.windows,
+                    policy,
+                    items::AppLaunchIntent::Default,
+                ) {
+                    items::AppOpen::FocusWindow(id) => niri::focus_window(id),
+                    items::AppOpen::Launch => launch::launch(app, &self.config),
+                }
+            }
+            (Item::App(i), Action::NewInstance) => {
+                let app = &self.apps[*i];
                 launch::launch(app, &self.config)
+                    .inspect(|()| self.history.record(&app.id, history::now()))
             }
             (Item::App(i), Action::Desktop(n)) => {
                 let app = &self.apps[*i];
@@ -433,9 +451,10 @@ impl Launcher {
                 return;
             }
         };
-        let launched = matches!(action, Action::Primary | Action::Desktop(_));
+        // Primary app activation counts for ranking whether it launched or focused a window.
+        let records_usage = matches!(action, Action::Primary | Action::Desktop(_));
         if result.is_ok()
-            && launched
+            && records_usage
             && let Some(key) = item.history_key(&self.apps)
         {
             self.history.record(&key, history::now());
