@@ -31,7 +31,12 @@ impl From<SkinTone> for emojis::SkinTone {
 
 /// Colour emoji fonts with PNG glyphs (CBDT or sbix), in order of
 /// preference.
-const COLOR_FONTS: &[&str] = &["Noto Color Emoji", "JoyPixels", "Apple Color Emoji", "EmojiOne Color"];
+const COLOR_FONTS: &[&str] = &[
+    "Noto Color Emoji",
+    "JoyPixels",
+    "Apple Color Emoji",
+    "EmojiOne Color",
+];
 /// Pixels per em to ask for; bitmap fonts return their nearest strike.
 const PIXELS_PER_EM: u16 = 160;
 
@@ -64,7 +69,9 @@ impl EmojiFont {
             let (source, index) = db.face_source(id)?;
             let data = match source {
                 fontdb::Source::File(path) => std::fs::read(path).ok()?,
-                fontdb::Source::Binary(data) | fontdb::Source::SharedFile(_, data) => (*data).as_ref().to_vec(),
+                fontdb::Source::Binary(data) | fontdb::Source::SharedFile(_, data) => {
+                    (*data).as_ref().to_vec()
+                }
             };
             Some(Self {
                 data,
@@ -151,8 +158,19 @@ mod tests {
         // Emoji without skin tones are unchanged.
         let rocket = plain.iter().find(|e| e.name == "rocket").unwrap();
         assert_eq!(rocket.shortcode, Some("rocket"));
-        assert_eq!(all(SkinTone::Dark).iter().find(|e| e.name == "rocket").unwrap().glyph, "🚀");
-        assert!(!plain.iter().any(|e| e.name.contains("skin tone") && e.name.split(' ').count() <= 3));
+        assert_eq!(
+            all(SkinTone::Dark)
+                .iter()
+                .find(|e| e.name == "rocket")
+                .unwrap()
+                .glyph,
+            "🚀"
+        );
+        assert!(
+            !plain
+                .iter()
+                .any(|e| e.name.contains("skin tone") && e.name.split(' ').count() <= 3)
+        );
     }
 
     /// Needs a colour emoji font installed; skipped without one.
@@ -179,11 +197,13 @@ mod tests {
 
     #[test]
     fn candidates_search_shortcodes() {
-        let tada = all(SkinTone::Default).into_iter().find(|e| e.glyph == "🎉").unwrap();
+        let tada = all(SkinTone::Default)
+            .into_iter()
+            .find(|e| e.glyph == "🎉")
+            .unwrap();
         let c = tada.candidate();
         assert_eq!(c.name, "party popper");
         assert!(c.secondary.contains(&"tada".to_string()));
         assert_eq!(c.key.as_deref(), Some("emoji:party popper"));
     }
 }
-

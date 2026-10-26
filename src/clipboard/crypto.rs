@@ -24,7 +24,9 @@ impl Cipher {
         match keyring_key() {
             Ok(key) => Some(Self::new(&key)),
             Err(err) => {
-                eprintln!("rockhopper: keyring unavailable, clipboard history stays in memory: {err}");
+                eprintln!(
+                    "rockhopper: keyring unavailable, clipboard history stays in memory: {err}"
+                );
                 None
             }
         }
@@ -74,7 +76,9 @@ fn keyring_key() -> Result<[u8; 32], String> {
         Err(keyring_core::Error::NoEntry) => {
             let mut key = [0u8; 32];
             getrandom::fill(&mut key).map_err(|e| e.to_string())?;
-            entry.set_password(&encode_hex(&key)).map_err(|e| e.to_string())?;
+            entry
+                .set_password(&encode_hex(&key))
+                .map_err(|e| e.to_string())?;
             Ok(key)
         }
         Err(e) => Err(e.to_string()),
@@ -107,8 +111,14 @@ mod tests {
         let sealed = cipher.seal(b"secret text", b"1.meta");
         assert!(!sealed.windows(6).any(|w| w == b"secret"));
         assert_eq!(cipher.open(&sealed, b"1.meta").unwrap(), b"secret text");
-        assert!(cipher.open(&sealed, b"2.meta").is_none(), "bound to its name");
-        assert!(Cipher::new(&[8; 32]).open(&sealed, b"1.meta").is_none(), "other key");
+        assert!(
+            cipher.open(&sealed, b"2.meta").is_none(),
+            "bound to its name"
+        );
+        assert!(
+            Cipher::new(&[8; 32]).open(&sealed, b"1.meta").is_none(),
+            "other key"
+        );
         let mut flipped = sealed.clone();
         *flipped.last_mut().unwrap() ^= 1;
         assert!(cipher.open(&flipped, b"1.meta").is_none(), "tampered");

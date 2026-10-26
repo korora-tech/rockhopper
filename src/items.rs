@@ -13,7 +13,10 @@ pub enum Item {
     /// Index into the app list.
     App(usize),
     /// An open window, with the app it belongs to when known.
-    Window { window: Window, app: Option<usize> },
+    Window {
+        window: Window,
+        app: Option<usize>,
+    },
     System(SystemCommand),
     /// Opens the clipboard history.
     Clipboard,
@@ -52,7 +55,10 @@ pub struct Entry {
 /// Apps, then windows, then commands.
 pub fn entries(apps: &[App], windows: &[Window], clipboard: bool) -> Vec<Entry> {
     let app_entries = apps.iter().enumerate().map(|(i, app)| {
-        let program = app.argv.first().map(|p| p.rsplit('/').next().unwrap_or(p).to_owned());
+        let program = app
+            .argv
+            .first()
+            .map(|p| p.rsplit('/').next().unwrap_or(p).to_owned());
         Entry {
             item: Item::App(i),
             candidate: Candidate {
@@ -134,7 +140,10 @@ impl Item {
 
     pub fn subtitle(&self, apps: &[App]) -> Option<String> {
         match self {
-            Self::App(i) => apps[*i].comment.clone().or_else(|| apps[*i].generic_name.clone()),
+            Self::App(i) => apps[*i]
+                .comment
+                .clone()
+                .or_else(|| apps[*i].generic_name.clone()),
             Self::Window { window, app } => {
                 let owner = app
                     .map(|a| apps[a].name.clone())
@@ -303,7 +312,11 @@ mod tests {
     #[test]
     fn windows_find_their_app() {
         let apps = vec![app("com.mitchellh.ghostty.desktop", "Ghostty")];
-        let entries = entries(&apps, &[window("com.mitchellh.ghostty"), window("unknown")], false);
+        let entries = entries(
+            &apps,
+            &[window("com.mitchellh.ghostty"), window("unknown")],
+            false,
+        );
         let windows: Vec<_> = entries
             .iter()
             .filter_map(|e| match &e.item {
@@ -313,7 +326,10 @@ mod tests {
             .collect();
         assert_eq!(windows, [Some(0), None]);
         let ghostty_window = &entries[1];
-        assert_eq!(ghostty_window.candidate.secondary, ["Ghostty", "com.mitchellh.ghostty"]);
+        assert_eq!(
+            ghostty_window.candidate.secondary,
+            ["Ghostty", "com.mitchellh.ghostty"]
+        );
         assert_eq!(
             ghostty_window.item.subtitle(&apps).as_deref(),
             Some("Ghostty · Workspace 2")
@@ -325,16 +341,31 @@ mod tests {
         let apps = vec![app("a.desktop", "A")];
         let mut history = History::default();
         let labels = |item: &Item, h: &History| -> Vec<String> {
-            item.actions(&apps, h).into_iter().map(|a| a.label).collect()
+            item.actions(&apps, h)
+                .into_iter()
+                .map(|a| a.label)
+                .collect()
         };
-        assert_eq!(labels(&Item::App(0), &history), ["Open", "New Window", "Copy Command"]);
+        assert_eq!(
+            labels(&Item::App(0), &history),
+            ["Open", "New Window", "Copy Command"]
+        );
         history.record("a.desktop", crate::history::now());
-        assert_eq!(labels(&Item::App(0), &history).last().unwrap(), "Reset Ranking");
+        assert_eq!(
+            labels(&Item::App(0), &history).last().unwrap(),
+            "Reset Ranking"
+        );
         let w = Item::Window {
             window: window("a"),
             app: Some(0),
         };
-        assert_eq!(labels(&w, &history), ["Switch to", "Open New A", "Close Window", "Copy Title"]);
-        assert_eq!(labels(&Item::System(SystemCommand::Lock), &history), ["Run"]);
+        assert_eq!(
+            labels(&w, &history),
+            ["Switch to", "Open New A", "Close Window", "Copy Title"]
+        );
+        assert_eq!(
+            labels(&Item::System(SystemCommand::Lock), &history),
+            ["Run"]
+        );
     }
 }

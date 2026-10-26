@@ -18,8 +18,8 @@ use gpui_kit::*;
 
 use crate::apps::{self, App as DesktopApp};
 use crate::clipboard::{Clip, Clipboard};
-use crate::emoji::{self, Emoji, EmojiFont};
 use crate::config::{self, Config, ThemeChoice};
+use crate::emoji::{self, Emoji, EmojiFont};
 use crate::history::{self, History};
 use crate::ipc::{Request, TestInput};
 use crate::items::{self, Action, Entry, Item};
@@ -68,9 +68,13 @@ impl Launcher {
         let config = config::load();
         let clipboard = config.clipboard.enabled.then(|| {
             let (tx, rx) = async_channel::bounded::<()>(1);
-            let clipboard = Clipboard::start(config.clipboard.max_entries, config.clipboard.images, move || {
-                _ = tx.try_send(());
-            });
+            let clipboard = Clipboard::start(
+                config.clipboard.max_entries,
+                config.clipboard.images,
+                move || {
+                    _ = tx.try_send(());
+                },
+            );
             cx.spawn(async move |this, cx| {
                 while rx.recv().await.is_ok() {
                     if this.update(cx, |this, cx| this.refresh_clips(cx)).is_err() {
@@ -168,13 +172,18 @@ impl Launcher {
         // by the frame gpui-kit draws (see FRAME_INSET) and pulled back by
         // negative margins so the frame lies off-screen.
         let display = target_display(self.config.appearance.output.as_deref(), cx);
-        let output = display.as_ref().map_or(size(px(1920.), px(1080.)), |d| d.bounds().size);
+        let output = display
+            .as_ref()
+            .map_or(size(px(1920.), px(1080.)), |d| d.bounds().size);
         let options = WindowOptions {
             titlebar: None,
             display_id: display.as_ref().map(|d| d.id()),
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: Point::default(),
-                size: size(output.width + FRAME_INSET * 2., output.height + FRAME_INSET * 2.),
+                size: size(
+                    output.width + FRAME_INSET * 2.,
+                    output.height + FRAME_INSET * 2.,
+                ),
             })),
             app_id: Some("rockhopper".into()),
             window_background: WindowBackgroundAppearance::Transparent,
@@ -196,7 +205,8 @@ impl Launcher {
         cx.defer(move |cx| {
             let view_launcher = launcher.clone();
             let opened = cx.open_window(options, |window, cx| {
-                let view = cx.new(|cx| view::LauncherView::new(view_launcher.clone(), start, window, cx));
+                let view =
+                    cx.new(|cx| view::LauncherView::new(view_launcher.clone(), start, window, cx));
                 let weak = view.downgrade();
                 view_launcher.update(cx, |this, _| this.view = Some(weak));
                 // gpui-kit's root paints the theme background; the backdrop
@@ -214,7 +224,9 @@ impl Launcher {
                             this.hide(cx);
                         }
                     }
-                    Err(err) => eprintln!("rockhopper: could not open the launcher window: {err:#}"),
+                    Err(err) => {
+                        eprintln!("rockhopper: could not open the launcher window: {err:#}")
+                    }
                 }
             });
         });
@@ -254,7 +266,11 @@ impl Launcher {
     }
 
     fn rebuild_entries(&mut self) {
-        self.entries = Rc::new(items::entries(&self.apps, &self.windows, self.clipboard.is_some()));
+        self.entries = Rc::new(items::entries(
+            &self.apps,
+            &self.windows,
+            self.clipboard.is_some(),
+        ));
     }
 
     fn refresh_clips(&mut self, cx: &mut Context<Self>) {
@@ -362,7 +378,8 @@ impl Launcher {
             (Item::Window { window, .. }, Action::Primary) => niri::focus_window(window.id),
             (Item::Window { app: Some(a), .. }, Action::NewInstance) => {
                 let app = &self.apps[*a];
-                launch::launch(app, &self.config).inspect(|()| self.history.record(&app.id, history::now()))
+                launch::launch(app, &self.config)
+                    .inspect(|()| self.history.record(&app.id, history::now()))
             }
             (Item::Window { window, .. }, Action::CloseWindow) => {
                 let closed = niri::close_window(window.id);
@@ -420,7 +437,11 @@ impl Launcher {
                     found
                 })
                 .await;
-            eprintln!("rockhopper: indexed {} apps in {:?}", found.len(), started.elapsed());
+            eprintln!(
+                "rockhopper: indexed {} apps in {:?}",
+                found.len(),
+                started.elapsed()
+            );
             _ = this.update(cx, |this, cx| {
                 this.apps = Rc::new(found);
                 this.rebuild_entries();
@@ -451,7 +472,9 @@ fn report(result: std::io::Result<()>, item: &Item, apps: &[DesktopApp]) {
 fn target_display(configured: Option<&str>, cx: &gpui_kit::App) -> Option<Rc<dyn PlatformDisplay>> {
     let by_name = |name: String| {
         let uuid = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_DNS, name.as_bytes());
-        cx.displays().into_iter().find(|d| d.uuid().is_ok_and(|u| u == uuid))
+        cx.displays()
+            .into_iter()
+            .find(|d| d.uuid().is_ok_and(|u| u == uuid))
     };
     configured
         .map(str::to_owned)

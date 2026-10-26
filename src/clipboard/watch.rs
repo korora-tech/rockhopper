@@ -24,8 +24,17 @@ use wayland_protocols_wlr::data_control::v1::client::{
 use super::store::Captured;
 
 /// Password managers mark secrets with this; such copies are never kept.
-const SECRET_MIMES: &[&str] = &["x-kde-passwordManagerHint", "application/x-nspasteboard-concealed-type"];
-const TEXT_MIMES: &[&str] = &["text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "STRING", "TEXT"];
+const SECRET_MIMES: &[&str] = &[
+    "x-kde-passwordManagerHint",
+    "application/x-nspasteboard-concealed-type",
+];
+const TEXT_MIMES: &[&str] = &[
+    "text/plain;charset=utf-8",
+    "UTF8_STRING",
+    "text/plain",
+    "STRING",
+    "TEXT",
+];
 const PNG: &str = "image/png";
 const MAX_TEXT: usize = 1 << 20;
 const MAX_IMAGE: usize = 32 << 20;
@@ -41,17 +50,26 @@ pub struct Handle {
 }
 
 enum Command {
-    Set { mimes: Vec<String>, data: Arc<Vec<u8>> },
+    Set {
+        mimes: Vec<String>,
+        data: Arc<Vec<u8>>,
+    },
 }
 
 impl Handle {
     pub fn set_text(&self, text: &str) {
         let mimes = TEXT_MIMES.iter().map(|m| m.to_string()).collect();
-        self.send(Command::Set { mimes, data: Arc::new(text.as_bytes().to_vec()) });
+        self.send(Command::Set {
+            mimes,
+            data: Arc::new(text.as_bytes().to_vec()),
+        });
     }
 
     pub fn set_png(&self, png: Arc<Vec<u8>>) {
-        self.send(Command::Set { mimes: vec![PNG.into()], data: png });
+        self.send(Command::Set {
+            mimes: vec![PNG.into()],
+            data: png,
+        });
     }
 
     fn send(&self, command: Command) {
@@ -70,7 +88,9 @@ pub fn start(images: bool, on_copy: impl Fn(Captured) + Send + Sync + 'static) -
     let manager: ZwlrDataControlManagerV1 = match globals.bind(&qh, 1..=2, ()) {
         Ok(m) => m,
         Err(_) => {
-            eprintln!("rockhopper: the compositor has no wlr data-control; clipboard history is off");
+            eprintln!(
+                "rockhopper: the compositor has no wlr data-control; clipboard history is off"
+            );
             return None;
         }
     };
@@ -154,7 +174,10 @@ pub fn start(images: bool, on_copy: impl Fn(Captured) + Send + Sync + 'static) -
         })
         .ok()?;
 
-    Some(Handle { tx, wake: Arc::new(wake_tx) })
+    Some(Handle {
+        tx,
+        wake: Arc::new(wake_tx),
+    })
 }
 
 struct State {
@@ -231,11 +254,27 @@ fn read_limited(reader: &mut UnixStream, limit: usize) -> Option<Vec<u8>> {
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
-    fn event(_: &mut Self, _: &wl_registry::WlRegistry, _: wl_registry::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &wl_registry::WlRegistry,
+        _: wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 
 impl Dispatch<wl_seat::WlSeat, ()> for State {
-    fn event(_: &mut Self, _: &wl_seat::WlSeat, _: wl_seat::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &wl_seat::WlSeat,
+        _: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 
 impl Dispatch<ZwlrDataControlManagerV1, ()> for State {
@@ -263,7 +302,9 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for State {
             zwlr_data_control_device_v1::Event::DataOffer { id } => {
                 state.offers.insert(id.id(), Vec::new());
             }
-            zwlr_data_control_device_v1::Event::Selection { id: Some(offer) } => state.on_selection(offer),
+            zwlr_data_control_device_v1::Event::Selection { id: Some(offer) } => {
+                state.on_selection(offer)
+            }
             zwlr_data_control_device_v1::Event::PrimarySelection { id: Some(offer) } => {
                 state.offers.remove(&offer.id());
                 offer.destroy();
@@ -344,9 +385,20 @@ fn write_all(fd: OwnedFd, data: &[u8]) {
                 let Some(left) = deadline.checked_duration_since(Instant::now()) else {
                     return;
                 };
-                let mut pfd = libc::pollfd { fd: raw, events: libc::POLLOUT, revents: 0 };
+                let mut pfd = libc::pollfd {
+                    fd: raw,
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
                 // SAFETY: one valid pollfd.
-                if unsafe { libc::poll(&mut pfd, 1, left.as_nanos().div_ceil(1_000_000).min(i32::MAX as u128) as i32) } <= 0 {
+                if unsafe {
+                    libc::poll(
+                        &mut pfd,
+                        1,
+                        left.as_nanos().div_ceil(1_000_000).min(i32::MAX as u128) as i32,
+                    )
+                } <= 0
+                {
                     return;
                 }
             }
@@ -365,11 +417,20 @@ mod tests {
 
     #[test]
     fn choosing_a_type() {
-        assert_eq!(choose(&m(&["text/plain", "UTF8_STRING"]), true), Some("UTF8_STRING"));
+        assert_eq!(
+            choose(&m(&["text/plain", "UTF8_STRING"]), true),
+            Some("UTF8_STRING")
+        );
         assert_eq!(choose(&m(&["image/png", "text/html"]), true), Some(PNG));
         assert_eq!(choose(&m(&["image/png", "text/html"]), false), None);
-        assert_eq!(choose(&m(&["image/png", "text/plain;charset=utf-8"]), true), Some("text/plain;charset=utf-8"));
-        assert_eq!(choose(&m(&["text/plain", "x-kde-passwordManagerHint"]), true), None);
+        assert_eq!(
+            choose(&m(&["image/png", "text/plain;charset=utf-8"]), true),
+            Some("text/plain;charset=utf-8")
+        );
+        assert_eq!(
+            choose(&m(&["text/plain", "x-kde-passwordManagerHint"]), true),
+            None
+        );
         assert_eq!(choose(&m(&["application/x-thing"]), true), None);
     }
 

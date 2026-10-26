@@ -181,7 +181,8 @@ mod tests {
 
     #[test]
     fn partial_overrides() {
-        let c = parse("appearance:\n  theme: dark\n  width: 800\nterminal: [ghostty, -e]\n").unwrap();
+        let c =
+            parse("appearance:\n  theme: dark\n  width: 800\nterminal: [ghostty, -e]\n").unwrap();
         assert_eq!(c.appearance.theme, ThemeChoice::Dark);
         assert_eq!(c.appearance.width, 800.0);
         assert_eq!(c.appearance.top, 0.2);

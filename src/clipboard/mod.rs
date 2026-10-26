@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-pub use store::{Clip, Content};
 use store::{Captured, Store};
+pub use store::{Clip, Content};
 
 #[derive(Clone)]
 pub struct Clipboard {
@@ -32,7 +32,10 @@ impl Clipboard {
         let on_change = Arc::new(on_change);
         let (recorder, notify) = (store.clone(), on_change.clone());
         let watcher = watch::start(images, move |captured: Captured| {
-            let recorded = recorder.lock().expect("clipboard store").add(captured, now_nanos());
+            let recorded = recorder
+                .lock()
+                .expect("clipboard store")
+                .add(captured, now_nanos());
             if recorded.is_some() {
                 notify();
             }
@@ -57,7 +60,11 @@ impl Clipboard {
                 on_change();
             })
             .expect("spawn keyring thread");
-        Self { store, watcher, cleared }
+        Self {
+            store,
+            watcher,
+            cleared,
+        }
     }
 
     /// Newest first.
@@ -78,7 +85,9 @@ impl Clipboard {
         match &clip.content {
             Content::Text { text } => watcher.set_text(text),
             Content::Image { .. } => {
-                let png = self.image(clip.id).ok_or_else(|| std::io::Error::other("image is unreadable"))?;
+                let png = self
+                    .image(clip.id)
+                    .ok_or_else(|| std::io::Error::other("image is unreadable"))?;
                 watcher.set_png(png);
             }
         }
