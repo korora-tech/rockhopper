@@ -17,4 +17,6 @@ jobs:
         with:
           name: korora-tech
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - run: nix develop -c cargo fmt --check
+      - run: nix develop -c cargo clippy --all-targets -- -D warnings
       - run: nix build -L

@@ -42,8 +42,14 @@ impl App {
     pub fn owns_window(&self, app_id: &str) -> bool {
         let stem = self.id.strip_suffix(".desktop").unwrap_or(&self.id);
         stem.eq_ignore_ascii_case(app_id)
-            || self.wm_class.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(app_id))
-            || self.argv.first().is_some_and(|p| p.rsplit('/').next() == Some(app_id))
+            || self
+                .wm_class
+                .as_deref()
+                .is_some_and(|c| c.eq_ignore_ascii_case(app_id))
+            || self
+                .argv
+                .first()
+                .is_some_and(|p| p.rsplit('/').next() == Some(app_id))
     }
 }
 
@@ -62,7 +68,12 @@ pub fn application_dirs() -> Vec<PathBuf> {
     let mut seen = HashSet::new();
     data_home
         .into_iter()
-        .chain(data_dirs.split(':').filter(|d| !d.is_empty()).map(PathBuf::from))
+        .chain(
+            data_dirs
+                .split(':')
+                .filter(|d| !d.is_empty())
+                .map(PathBuf::from),
+        )
         .map(|d| d.join("applications"))
         .filter(|d| seen.insert(d.clone()))
         .collect()
@@ -114,7 +125,9 @@ impl Env {
         if program.contains('/') {
             return is_executable(Path::new(program));
         }
-        self.path.iter().any(|dir| is_executable(&dir.join(program)))
+        self.path
+            .iter()
+            .any(|dir| is_executable(&dir.join(program)))
     }
 }
 
@@ -262,7 +275,9 @@ pub fn parse(id: &str, path: &Path, text: &str, env: &Env) -> Option<App> {
         name,
         generic_name: localized("GenericName"),
         comment: localized("Comment"),
-        keywords: localized("Keywords").map(|k| split_list(&k)).unwrap_or_default(),
+        keywords: localized("Keywords")
+            .map(|k| split_list(&k))
+            .unwrap_or_default(),
         argv,
         terminal: get_bool("Terminal"),
         cwd: get("Path").filter(|p| !p.is_empty()).map(PathBuf::from),
@@ -283,7 +298,11 @@ fn groups(text: &str) -> HashMap<String, HashMap<String, String>> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if let Some(name) = line.trim_end().strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+        if let Some(name) = line
+            .trim_end()
+            .strip_prefix('[')
+            .and_then(|l| l.strip_suffix(']'))
+        {
             current = Some(name.to_owned());
             groups.entry(name.to_owned()).or_default();
             continue;
@@ -473,11 +492,21 @@ mod tests {
             "Name=A\nExec=a %u\nActions=new;private;missing;\n[Desktop Action new]\nName=New Window\nName[de]=Neues Fenster\nExec=a --new-window %u\n[Desktop Action private]\nName=Private\nExec=a --private\n",
         )
         .unwrap();
-        assert_eq!((app.name.as_str(), app.argv.as_slice()), ("A", ["a".to_string()].as_slice()));
-        let actions: Vec<_> = app.actions.iter().map(|a| (a.name.as_str(), a.argv.join(" "))).collect();
+        assert_eq!(
+            (app.name.as_str(), app.argv.as_slice()),
+            ("A", ["a".to_string()].as_slice())
+        );
+        let actions: Vec<_> = app
+            .actions
+            .iter()
+            .map(|a| (a.name.as_str(), a.argv.join(" ")))
+            .collect();
         assert_eq!(
             actions,
-            [("Neues Fenster", "a --new-window".into()), ("Private", "a --private".into())]
+            [
+                ("Neues Fenster", "a --new-window".into()),
+                ("Private", "a --private".into())
+            ]
         );
     }
 
@@ -504,7 +533,12 @@ mod tests {
         assert!(entry("Name=A\nExec=a\nOnlyShowIn=GNOME;niri;").is_some());
         assert!(entry("Name=A\nExec=a\nNotShowIn=niri;").is_none());
         assert!(entry("Name=A\nExec=a\nTryExec=definitely-not-installed-xyz").is_none());
-        let link = parse("l.desktop", Path::new("/l"), "[Desktop Entry]\nType=Link\nName=L\nURL=x", &env());
+        let link = parse(
+            "l.desktop",
+            Path::new("/l"),
+            "[Desktop Entry]\nType=Link\nName=L\nURL=x",
+            &env(),
+        );
         assert!(link.is_none());
     }
 
@@ -520,7 +554,10 @@ mod tests {
             ["app", "--icon", "app-icon", "--name=My App", "100%"]
         );
         assert_eq!(expand_exec("app %i", "N", None, p).unwrap(), ["app"]);
-        assert_eq!(expand_exec(r#"a "" b"#, "N", None, p).unwrap(), ["a", "", "b"]);
+        assert_eq!(
+            expand_exec(r#"a "" b"#, "N", None, p).unwrap(),
+            ["a", "", "b"]
+        );
         assert!(expand_exec(r#"a "unterminated"#, "N", None, p).is_none());
         assert!(expand_exec("%U", "N", None, p).is_none());
     }

@@ -14,7 +14,13 @@ pub enum SystemCommand {
 }
 
 impl SystemCommand {
-    pub const ALL: [Self; 5] = [Self::Lock, Self::Suspend, Self::LogOut, Self::Reboot, Self::PowerOff];
+    pub const ALL: [Self; 5] = [
+        Self::Lock,
+        Self::Suspend,
+        Self::LogOut,
+        Self::Reboot,
+        Self::PowerOff,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {

@@ -86,7 +86,10 @@ impl History {
             std::fs::File::open(dir)?.sync_all()
         })();
         if let Err(err) = result {
-            eprintln!("rockhopper: could not save history to {}: {err}", path.display());
+            eprintln!(
+                "rockhopper: could not save history to {}: {err}",
+                path.display()
+            );
         }
     }
 }

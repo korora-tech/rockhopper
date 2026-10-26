@@ -37,13 +37,24 @@ impl Ranker {
 
     /// Indices into `candidates`, best match first; ties keep their order.
     /// An empty query matches nothing.
-    pub fn rank(&mut self, candidates: &[Candidate], history: &History, query: &str, now: u64) -> Vec<usize> {
+    pub fn rank(
+        &mut self,
+        candidates: &[Candidate],
+        history: &History,
+        query: &str,
+        now: u64,
+    ) -> Vec<usize> {
         let query = query.trim();
         if query.is_empty() {
             return Vec::new();
         }
 
-        let pattern = Pattern::new(query, CaseMatching::Smart, Normalization::Smart, AtomKind::Fuzzy);
+        let pattern = Pattern::new(
+            query,
+            CaseMatching::Smart,
+            Normalization::Smart,
+            AtomKind::Fuzzy,
+        );
         let lower = query.to_lowercase();
         let mut scored: Vec<(usize, f32)> = candidates
             .iter()
@@ -106,7 +117,11 @@ mod tests {
 
     #[test]
     fn empty_query_matches_nothing() {
-        assert!(Ranker::new().rank(&candidates(), &History::default(), "  ", 0).is_empty());
+        assert!(
+            Ranker::new()
+                .rank(&candidates(), &History::default(), "  ", 0)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -133,7 +148,10 @@ mod tests {
         let cs = candidates();
         let mut ranker = Ranker::new();
         let h = History::default();
-        assert_eq!(names(&cs, &ranker.rank(&cs, &h, "terminal", 0)), ["Ghostty"]);
+        assert_eq!(
+            names(&cs, &ranker.rank(&cs, &h, "terminal", 0)),
+            ["Ghostty"]
+        );
         assert_eq!(names(&cs, &ranker.rank(&cs, &h, "nautilus", 0)), ["Files"]);
     }
 }

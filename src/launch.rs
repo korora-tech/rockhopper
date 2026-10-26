@@ -24,7 +24,11 @@ pub fn command_line(app: &App, config: &Config, systemd_run: bool) -> Vec<String
             ]
             .map(String::from),
         );
-        argv.push(format!("--unit=app-rockhopper-{}-{}", unit_id(&app.id), nonce()));
+        argv.push(format!(
+            "--unit=app-rockhopper-{}-{}",
+            unit_id(&app.id),
+            nonce()
+        ));
         argv.push(format!("--description={}", app.name));
         argv.push("--".into());
     }
@@ -77,9 +81,8 @@ pub fn launch_argv(app: &App, argv: &[String], config: &Config) -> std::io::Resu
 }
 
 fn has_systemd_run() -> bool {
-    std::env::var_os("PATH").is_some_and(|p| {
-        std::env::split_paths(&p).any(|d| d.join("systemd-run").is_file())
-    })
+    std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("systemd-run").is_file()))
 }
 
 /// Desktop file ID without `.desktop`, limited to characters systemd allows
@@ -129,7 +132,10 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(command_line(&app(false), &config, false), ["htop"]);
-        assert_eq!(command_line(&app(true), &config, false), ["ghostty", "-e", "htop"]);
+        assert_eq!(
+            command_line(&app(true), &config, false),
+            ["ghostty", "-e", "htop"]
+        );
     }
 
     #[test]
@@ -137,7 +143,10 @@ mod tests {
         let argv = command_line(&app(false), &Config::default(), true);
         assert_eq!(argv[0], "systemd-run");
         let unit = argv.iter().find(|a| a.starts_with("--unit=")).unwrap();
-        assert!(unit.starts_with(r"--unit=app-rockhopper-org.foo\x2dbar-"), "{unit}");
+        assert!(
+            unit.starts_with(r"--unit=app-rockhopper-org.foo\x2dbar-"),
+            "{unit}"
+        );
         assert_eq!(&argv[argv.len() - 2..], ["--", "htop"]);
     }
 

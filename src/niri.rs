@@ -12,7 +12,9 @@ use serde_json::{Value, json};
 fn request(request: &Value) -> Option<Value> {
     let path = std::env::var_os("NIRI_SOCKET")?;
     let mut stream = UnixStream::connect(path).ok()?;
-    stream.set_read_timeout(Some(Duration::from_millis(200))).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .ok()?;
     writeln!(stream, "{request}").ok()?;
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).ok()?;
@@ -26,7 +28,9 @@ pub fn available() -> bool {
 /// The name of the output with keyboard focus, such as `DP-1`.
 pub fn focused_output() -> Option<String> {
     let reply = request(&json!("FocusedOutput"))?;
-    reply["Ok"]["FocusedOutput"]["name"].as_str().map(str::to_owned)
+    reply["Ok"]["FocusedOutput"]["name"]
+        .as_str()
+        .map(str::to_owned)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -69,20 +73,30 @@ pub fn windows() -> Vec<Window> {
     let Some(reply) = request(&json!("Windows")) else {
         return Vec::new();
     };
-    let Ok(mut raw) = serde_json::from_value::<Vec<RawWindow>>(reply["Ok"]["Windows"].clone()) else {
+    let Ok(mut raw) = serde_json::from_value::<Vec<RawWindow>>(reply["Ok"]["Windows"].clone())
+    else {
         return Vec::new();
     };
     let workspaces: HashMap<u64, String> = request(&json!("Workspaces"))
-        .and_then(|r| serde_json::from_value::<Vec<RawWorkspace>>(r["Ok"]["Workspaces"].clone()).ok())
+        .and_then(|r| {
+            serde_json::from_value::<Vec<RawWorkspace>>(r["Ok"]["Workspaces"].clone()).ok()
+        })
         .unwrap_or_default()
         .into_iter()
         .map(|w| (w.id, w.name.unwrap_or_else(|| w.idx.to_string())))
         .collect();
-    raw.sort_by(|a, b| b.focus_timestamp.partial_cmp(&a.focus_timestamp).unwrap_or(std::cmp::Ordering::Equal));
+    raw.sort_by(|a, b| {
+        b.focus_timestamp
+            .partial_cmp(&a.focus_timestamp)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     raw.into_iter()
         .map(|w| Window {
             id: w.id,
-            title: w.title.filter(|t| !t.is_empty()).unwrap_or_else(|| "Untitled".into()),
+            title: w
+                .title
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| "Untitled".into()),
             app_id: w.app_id,
             workspace: w.workspace_id.and_then(|id| workspaces.get(&id).cloned()),
             is_focused: w.is_focused,

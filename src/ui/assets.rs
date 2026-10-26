@@ -4,7 +4,21 @@ use std::borrow::Cow;
 
 use gpui_kit::{AssetSource, Result, SharedString};
 
-gpui_kit::assets::icon_assets!(ExtraIcons, [Lock, Moon, LogOut, RotateCcw, Power, AppWindow, ClipboardList, Type, Image, FaceSlightlySmiling]);
+gpui_kit::assets::icon_assets!(
+    ExtraIcons,
+    [
+        Lock,
+        Moon,
+        LogOut,
+        RotateCcw,
+        Power,
+        AppWindow,
+        ClipboardList,
+        Type,
+        Image,
+        FaceSlightlySmiling
+    ]
+);
 
 pub struct Assets;
 

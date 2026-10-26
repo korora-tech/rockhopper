@@ -55,7 +55,17 @@ const EMOJI_PLACEHOLDER: &str = "Search emoji…";
 
 actions!(
     rockhopper,
-    [SelectNext, SelectPrevious, SelectDown, SelectUp, SelectLeft, SelectRight, Open, Dismiss, ToggleActions]
+    [
+        SelectNext,
+        SelectPrevious,
+        SelectDown,
+        SelectUp,
+        SelectLeft,
+        SelectRight,
+        Open,
+        Dismiss,
+        ToggleActions
+    ]
 );
 
 pub fn bind_keys(cx: &mut gpui_kit::App) {
@@ -170,7 +180,12 @@ pub struct LauncherView {
 }
 
 impl LauncherView {
-    pub fn new(launcher: Entity<Launcher>, start: Start, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        launcher: Entity<Launcher>,
+        start: Start,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(PLACEHOLDER));
         input.update(cx, |state, cx| state.focus(window, cx));
         let subscriptions = vec![
@@ -213,7 +228,8 @@ impl LauncherView {
     /// Replace the search text, as typing would.
     pub fn type_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         // set_value does not emit InputEvent::Change.
-        self.input.update(cx, |input, cx| input.set_value(text.to_owned(), window, cx));
+        self.input
+            .update(cx, |input, cx| input.set_value(text.to_owned(), window, cx));
         self.query = text.to_owned();
         self.selected = 0;
         self.rerank(cx);
@@ -242,10 +258,14 @@ impl LauncherView {
         self.results = match self.mode {
             Mode::Search if self.query.trim().is_empty() => Vec::new(),
             Mode::Search => {
-                let candidates: Vec<_> = launcher.entries.iter().map(|e| e.candidate.clone()).collect();
-                let mut ranked = self
-                    .ranker
-                    .rank(&candidates, &launcher.history, &self.query, history::now());
+                let candidates: Vec<_> = launcher
+                    .entries
+                    .iter()
+                    .map(|e| e.candidate.clone())
+                    .collect();
+                let mut ranked =
+                    self.ranker
+                        .rank(&candidates, &launcher.history, &self.query, history::now());
                 ranked.truncate(MAX_RESULTS);
                 ranked
             }
@@ -255,12 +275,14 @@ impl LauncherView {
                 self.ranker
                     .rank(&candidates, &launcher.history, &self.query, history::now())
             }
-            Mode::Emoji if self.query.trim().is_empty() => frequent_first(&launcher.emojis, &launcher.history),
+            Mode::Emoji if self.query.trim().is_empty() => {
+                frequent_first(&launcher.emojis, &launcher.history)
+            }
             Mode::Emoji => {
                 let candidates: Vec<_> = launcher.emojis.iter().map(Emoji::candidate).collect();
-                let mut ranked = self
-                    .ranker
-                    .rank(&candidates, &launcher.history, &self.query, history::now());
+                let mut ranked =
+                    self.ranker
+                        .rank(&candidates, &launcher.history, &self.query, history::now());
                 ranked.truncate(MAX_RESULTS * 4);
                 ranked
             }
@@ -382,7 +404,13 @@ impl LauncherView {
         false
     }
 
-    fn run(&mut self, target: usize, action: MenuAction, window: &mut Window, cx: &mut Context<Self>) {
+    fn run(
+        &mut self,
+        target: usize,
+        action: MenuAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let launcher = self.launcher.read(cx);
         match action {
             MenuAction::Item(def) => {
@@ -401,7 +429,8 @@ impl LauncherView {
                 }
                 self.menu = None;
                 self.confirming = None;
-                self.launcher.update(cx, |l, cx| l.perform(&item, def.action, cx));
+                self.launcher
+                    .update(cx, |l, cx| l.perform(&item, def.action, cx));
             }
             MenuAction::CopyClip => {
                 let clip = launcher.clips[target].clone();
@@ -452,7 +481,11 @@ impl LauncherView {
                 }
                 Mode::Clipboard => (
                     clip_title(&launcher.clips[target]),
-                    vec![MenuAction::CopyClip, MenuAction::DeleteClip, MenuAction::DeleteAllClips],
+                    vec![
+                        MenuAction::CopyClip,
+                        MenuAction::DeleteClip,
+                        MenuAction::DeleteAllClips,
+                    ],
                 ),
                 Mode::Emoji => {
                     let emoji = &launcher.emojis[target];
@@ -481,7 +514,8 @@ impl LauncherView {
             cx.notify();
         } else if !self.query.is_empty() {
             // set_value does not emit InputEvent::Change.
-            self.input.update(cx, |input, cx| input.set_value("", window, cx));
+            self.input
+                .update(cx, |input, cx| input.set_value("", window, cx));
             self.query.clear();
             self.rerank(cx);
         } else if self.mode != Mode::Search {
@@ -517,19 +551,34 @@ impl LauncherView {
             .on_click(cx.listener(move |this, _, window, cx| this.open_at(ix, window, cx)))
     }
 
-    fn render_entry_row(&self, ix: usize, entries: &[Entry], apps: &[DesktopApp], cx: &mut Context<Self>) -> AnyElement {
+    fn render_entry_row(
+        &self,
+        ix: usize,
+        entries: &[Entry],
+        apps: &[DesktopApp],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let entry = self.results[ix];
         let item = &entries[entry].item;
         let theme = cx.theme().clone();
         let confirming = self.confirming == Some(Confirm::Entry(entry));
         let subtitle = if confirming {
-            Some(format!("Press ↵ again to {}", item.title(apps).to_lowercase()))
+            Some(format!(
+                "Press ↵ again to {}",
+                item.title(apps).to_lowercase()
+            ))
         } else {
             item.subtitle(apps)
         };
         self.row(ix, &theme, cx)
             .child(item_icon(item.icon(apps), &theme))
-            .child(row_text(item.title(apps), subtitle, confirming, ix == self.selected, &theme))
+            .child(row_text(
+                item.title(apps),
+                subtitle,
+                confirming,
+                ix == self.selected,
+                &theme,
+            ))
             .child(kind_label(item.kind(apps), &theme))
             .into_any_element()
     }
@@ -540,14 +589,26 @@ impl LauncherView {
         let (symbol, kind, detail) = match &clip.content {
             Content::Text { text } => {
                 let chars = text.chars().count();
-                (Symbol::Text, "Text", format!("{chars} character{}", if chars == 1 { "" } else { "s" }))
+                (
+                    Symbol::Text,
+                    "Text",
+                    format!("{chars} character{}", if chars == 1 { "" } else { "s" }),
+                )
             }
-            Content::Image { width, height } => (Symbol::Image, "Image", format!("{width}×{height}")),
+            Content::Image { width, height } => {
+                (Symbol::Image, "Image", format!("{width}×{height}"))
+            }
         };
         let subtitle = format!("{} · {detail}", ago(clip.time));
         self.row(ix, &theme, cx)
             .child(item_icon(ItemIcon::Symbol(symbol), &theme))
-            .child(row_text(clip_title(clip), Some(subtitle), false, ix == self.selected, &theme))
+            .child(row_text(
+                clip_title(clip),
+                Some(subtitle),
+                false,
+                ix == self.selected,
+                &theme,
+            ))
             .child(kind_label(kind, &theme))
             .into_any_element()
     }
@@ -557,7 +618,10 @@ impl LauncherView {
         let font = self.launcher.read(cx).emoji_font.clone()?;
         self.emoji_images
             .entry(glyph)
-            .or_insert_with(|| font.png(glyph).map(|png| Arc::new(Image::from_bytes(ImageFormat::Png, png))))
+            .or_insert_with(|| {
+                font.png(glyph)
+                    .map(|png| Arc::new(Image::from_bytes(ImageFormat::Png, png)))
+            })
             .clone()
     }
 
@@ -565,12 +629,20 @@ impl LauncherView {
     fn emoji_glyph(&mut self, glyph: &'static str, size: f32, cx: &App) -> AnyElement {
         match self.emoji_image(glyph, cx) {
             Some(image) => img(image).size(px(size)).into_any_element(),
-            None => div().text_size(px(size * 0.85)).child(glyph).into_any_element(),
+            None => div()
+                .text_size(px(size * 0.85))
+                .child(glyph)
+                .into_any_element(),
         }
     }
 
     /// One row of the emoji grid.
-    fn render_emoji_row(&mut self, row: usize, emojis: &[Emoji], cx: &mut Context<Self>) -> AnyElement {
+    fn render_emoji_row(
+        &mut self,
+        row: usize,
+        emojis: &[Emoji],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = cx.theme().clone();
         let columns = self.columns.max(1);
         let start = row * columns;
@@ -639,7 +711,9 @@ impl LauncherView {
                     .text_sm()
                     .when(danger, |row| row.text_color(theme.danger))
                     .when(selected, |row| row.bg(theme.accent))
-                    .when(selected && !danger, |row| row.text_color(theme.accent_foreground))
+                    .when(selected && !danger, |row| {
+                        row.text_color(theme.accent_foreground)
+                    })
                     .on_mouse_move(cx.listener(move |this, _, _, cx| {
                         if let Some(menu) = &mut this.menu
                             && menu.selected != i
@@ -683,7 +757,12 @@ impl LauncherView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(img(image).max_w_full().max_h_full().object_fit(ObjectFit::Contain))
+                    .child(
+                        img(image)
+                            .max_w_full()
+                            .max_h_full()
+                            .object_fit(ObjectFit::Contain),
+                    )
                     .into_any_element(),
                 None => div()
                     .p_4()
@@ -693,7 +772,13 @@ impl LauncherView {
                     .into_any_element(),
             },
         };
-        v_flex().flex_1().min_w_0().h_full().bg(theme.muted.opacity(0.25)).child(body).into_any_element()
+        v_flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .bg(theme.muted.opacity(0.25))
+            .child(body)
+            .into_any_element()
     }
 }
 
@@ -719,7 +804,9 @@ impl Render for LauncherView {
         let top = viewport.height * appearance.top.clamp(0., 0.8);
         let searching = !self.query.trim().is_empty();
         // The grid fills the panel less its padding (px_2 each side).
-        self.columns = (f32::from(width - px(16.) - px(2.)) / EMOJI_TILE).floor().max(1.) as usize;
+        self.columns = (f32::from(width - px(16.) - px(2.)) / EMOJI_TILE)
+            .floor()
+            .max(1.) as usize;
         let pill = match self.mode {
             Mode::Search => None,
             Mode::Clipboard => Some("Clipboard"),
@@ -772,7 +859,11 @@ impl Render for LauncherView {
                 .into_any_element()
         };
         let list_height = |rows: usize| {
-            let rows = if clipboard { VISIBLE_ROWS } else { (rows as f32).min(VISIBLE_ROWS) };
+            let rows = if clipboard {
+                VISIBLE_ROWS
+            } else {
+                (rows as f32).min(VISIBLE_ROWS)
+            };
             px(ROW_HEIGHT * rows)
         };
         let body = if !searching && self.mode == Mode::Search {
@@ -785,7 +876,9 @@ impl Render for LauncherView {
                 "emoji",
                 rows,
                 cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
-                    range.map(|row| this.render_emoji_row(row, &row_emojis, cx)).collect()
+                    range
+                        .map(|row| this.render_emoji_row(row, &row_emojis, cx))
+                        .collect()
                 }),
             )
             .track_scroll(&self.scroll)
@@ -815,7 +908,9 @@ impl Render for LauncherView {
                     "results",
                     self.results.len(),
                     cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
-                        range.map(|ix| this.render_clip_row(ix, &row_clips, cx)).collect()
+                        range
+                            .map(|ix| this.render_clip_row(ix, &row_clips, cx))
+                            .collect()
                     }),
                 )
             } else {
@@ -857,7 +952,10 @@ impl Render for LauncherView {
                 .map(|&e| entries[e].item.verb()),
             Mode::Clipboard | Mode::Emoji => self.results.get(self.selected).map(|_| "Copy"),
         };
-        let menu = self.menu.as_ref().map(|menu| self.render_menu(menu, &theme, cx));
+        let menu = self
+            .menu
+            .as_ref()
+            .map(|menu| self.render_menu(menu, &theme, cx));
         // The menu floats over the panel's lower edge; with few results the
         // panel grows so the menu stays inside it.
         let menu_room = self
@@ -1037,7 +1135,13 @@ fn key(keys: &str) -> Keystroke {
     Keystroke::parse(keys).expect("valid key hint")
 }
 
-fn row_text(title: String, subtitle: Option<String>, alert: bool, selected: bool, theme: &Theme) -> impl IntoElement {
+fn row_text(
+    title: String,
+    subtitle: Option<String>,
+    alert: bool,
+    selected: bool,
+    theme: &Theme,
+) -> impl IntoElement {
     v_flex()
         .flex_1()
         .min_w_0()
@@ -1045,7 +1149,11 @@ fn row_text(title: String, subtitle: Option<String>, alert: bool, selected: bool
             div()
                 .text_sm()
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(if selected { theme.accent_foreground } else { theme.foreground })
+                .text_color(if selected {
+                    theme.accent_foreground
+                } else {
+                    theme.foreground
+                })
                 .truncate()
                 .child(title),
         )
@@ -1053,7 +1161,11 @@ fn row_text(title: String, subtitle: Option<String>, alert: bool, selected: bool
             this.child(
                 div()
                     .text_xs()
-                    .text_color(if alert { theme.danger } else { theme.muted_foreground })
+                    .text_color(if alert {
+                        theme.danger
+                    } else {
+                        theme.muted_foreground
+                    })
                     .truncate()
                     .child(subtitle),
             )
@@ -1061,7 +1173,11 @@ fn row_text(title: String, subtitle: Option<String>, alert: bool, selected: bool
 }
 
 fn kind_label(kind: &'static str, theme: &Theme) -> impl IntoElement {
-    div().flex_none().text_xs().text_color(theme.muted_foreground).child(kind)
+    div()
+        .flex_none()
+        .text_xs()
+        .text_color(theme.muted_foreground)
+        .child(kind)
 }
 
 fn item_icon(icon: ItemIcon, theme: &Theme) -> AnyElement {
@@ -1069,8 +1185,15 @@ fn item_icon(icon: ItemIcon, theme: &Theme) -> AnyElement {
     match icon {
         ItemIcon::File(path) => img(path).size(size).flex_none().into_any_element(),
         ItemIcon::Initial(name) => {
-            let hue = name.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)) % 360;
-            let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+            let hue = name
+                .bytes()
+                .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32))
+                % 360;
+            let initial = name
+                .chars()
+                .next()
+                .map(|c| c.to_uppercase().to_string())
+                .unwrap_or_default();
             div()
                 .size(size)
                 .flex_none()
@@ -1147,7 +1270,10 @@ mod tests {
     fn frequent_emoji_lead_without_repeats() {
         let emojis = emoji::all(SkinTone::Default);
         let rocket = emojis.iter().position(|e| e.name == "rocket").unwrap();
-        let tada = emojis.iter().position(|e| e.name == "party popper").unwrap();
+        let tada = emojis
+            .iter()
+            .position(|e| e.name == "party popper")
+            .unwrap();
         let mut history = History::default();
         let now = history::now();
         history.record(&emojis[tada].key(), now);

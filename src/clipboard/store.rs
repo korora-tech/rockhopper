@@ -116,7 +116,10 @@ impl Store {
                 _ = std::fs::remove_file(&path);
                 continue;
             }
-            let Some(id) = name.strip_suffix(".meta").and_then(|i| i.parse::<u64>().ok()) else {
+            let Some(id) = name
+                .strip_suffix(".meta")
+                .and_then(|i| i.parse::<u64>().ok())
+            else {
                 continue;
             };
             let clip = std::fs::read(&path)
@@ -156,7 +159,14 @@ impl Store {
             let image = self.image(old.id);
             self.remove_files(old.id);
             self.memory_images.remove(&old.id);
-            return self.insert(Clip { id: now_nanos, time: now_nanos / 1_000_000_000, ..old }, image);
+            return self.insert(
+                Clip {
+                    id: now_nanos,
+                    time: now_nanos / 1_000_000_000,
+                    ..old
+                },
+                image,
+            );
         }
         let clip = Clip {
             id: now_nanos,
@@ -279,7 +289,10 @@ impl Store {
 /// what is in it, recording it on first use.
 fn prepare(dir: &std::path::Path, cipher: &Cipher) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     let check = dir.join(KEY_CHECK);
     match std::fs::read(&check) {
@@ -307,7 +320,10 @@ fn prepare(dir: &std::path::Path, cipher: &Cipher) -> std::io::Result<()> {
                 .create_new(true)
                 .mode(0o600)
                 .open(&check)?;
-            std::io::Write::write_all(&mut file, &cipher.seal(KEY_CHECK_VALUE, KEY_CHECK.as_bytes()))?;
+            std::io::Write::write_all(
+                &mut file,
+                &cipher.seal(KEY_CHECK_VALUE, KEY_CHECK.as_bytes()),
+            )?;
             file.sync_all()
         }
         Err(e) => Err(e),
@@ -323,7 +339,9 @@ pub fn wipe(dir: &std::path::Path, keep_key_check: bool) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        let ours = [".meta", ".png", ".tmp"].iter().any(|ext| name.ends_with(ext))
+        let ours = [".meta", ".png", ".tmp"]
+            .iter()
+            .any(|ext| name.ends_with(ext))
             || (name == KEY_CHECK && !keep_key_check);
         if ours {
             _ = std::fs::remove_file(entry.path());
@@ -379,13 +397,20 @@ mod tests {
         store.add(Captured::Png(png(4, 3)), 2);
         for file in std::fs::read_dir(&d).unwrap().flatten() {
             let bytes = std::fs::read(file.path()).unwrap();
-            assert!(!bytes.windows(7).any(|w| w == b"hunter2"), "{:?} is plaintext", file.path());
+            assert!(
+                !bytes.windows(7).any(|w| w == b"hunter2"),
+                "{:?} is plaintext",
+                file.path()
+            );
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
         }
         let reloaded = Store::open(d.clone(), Some(Cipher::new(&[1; 32])), 10);
         assert_eq!(texts(&reloaded), ["4x3", "hunter2 is not my password"]);
-        assert_eq!(reloaded.image(reloaded.clips()[0].id).unwrap().as_slice(), png(4, 3));
+        assert_eq!(
+            reloaded.image(reloaded.clips()[0].id).unwrap().as_slice(),
+            png(4, 3)
+        );
 
         // A replaced key cannot read the history, but leaves it in place.
         let files = std::fs::read_dir(&d).unwrap().count();
@@ -394,7 +419,10 @@ mod tests {
         assert!(!other.is_persistent());
         other.add(Captured::Text("kept in memory".into()), 9);
         assert_eq!(std::fs::read_dir(&d).unwrap().count(), files);
-        assert_eq!(texts(&Store::open(d.clone(), Some(Cipher::new(&[1; 32])), 10)).len(), 2);
+        assert_eq!(
+            texts(&Store::open(d.clone(), Some(Cipher::new(&[1; 32])), 10)).len(),
+            2
+        );
         _ = std::fs::remove_dir_all(&d);
     }
 
@@ -416,7 +444,10 @@ mod tests {
         left.sort();
         assert_eq!(left, ["1.meta", "key.check"]);
         wipe(&d, true);
-        let left: Vec<_> = std::fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name()).collect();
+        let left: Vec<_> = std::fs::read_dir(&d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
         assert_eq!(left, ["key.check"]);
         _ = std::fs::remove_dir_all(&d);
     }
