@@ -139,8 +139,8 @@ pub fn start(images: bool, on_copy: impl Fn(Captured) + Send + Sync + 'static) -
                     libc::pollfd { fd: guard.connection_fd().as_raw_fd(), events: libc::POLLIN, revents: 0 },
                     libc::pollfd { fd: wake_rx.as_raw_fd(), events: libc::POLLIN, revents: 0 },
                 ];
-                // SAFETY: fds is a valid array of two pollfd structs.
-                if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
+                // Wait until the Wayland connection or the wake socket is ready.
+                if crate::syscalls::poll(&mut fds, -1).is_err() {
                     drop(guard);
                     continue;
                 }
@@ -366,12 +366,8 @@ impl Dispatch<ZwlrDataControlSourceV1, ()> for State {
 /// target that never reads cannot hold the thread and the data forever.
 fn write_all(fd: OwnedFd, data: &[u8]) {
     let raw = fd.as_raw_fd();
-    // SAFETY: fcntl on an fd we own.
-    unsafe {
-        let flags = libc::fcntl(raw, libc::F_GETFL);
-        if flags < 0 || libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
-            return;
-        }
+    if crate::syscalls::set_nonblocking(fd.as_fd()).is_err() {
+        return;
     }
     let mut file = std::fs::File::from(fd);
     let deadline = Instant::now() + WRITE_TIMEOUT;
@@ -390,14 +386,11 @@ fn write_all(fd: OwnedFd, data: &[u8]) {
                     events: libc::POLLOUT,
                     revents: 0,
                 };
-                // SAFETY: one valid pollfd.
-                if unsafe {
-                    libc::poll(
-                        &mut pfd,
-                        1,
-                        left.as_nanos().div_ceil(1_000_000).min(i32::MAX as u128) as i32,
-                    )
-                } <= 0
+                if !crate::syscalls::poll(
+                    std::slice::from_mut(&mut pfd),
+                    left.as_nanos().div_ceil(1_000_000).min(i32::MAX as u128) as i32,
+                )
+                .is_ok_and(|ready| ready > 0)
                 {
                     return;
                 }

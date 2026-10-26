@@ -21,7 +21,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde-saphyr = "2"
 freedesktop-icons = "0.4"
-libc = "0.2" # setsid for launched apps
+libc = "0.2" # narrow POSIX calls isolated in syscalls.rs
 # GPUI names Wayland outputs by a v5 UUID of their name.
 uuid = { version = "1", features = ["v5"] }
 # Clipboard history: watched and set through wlr data-control.

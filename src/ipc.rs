@@ -77,7 +77,7 @@ pub fn socket_path() -> PathBuf {
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         // Without a runtime dir, fall back to a per-user name in /tmp.
-        .unwrap_or_else(|| PathBuf::from(format!("/tmp/rockhopper-{}", unsafe { libc::getuid() })));
+        .unwrap_or_else(|| PathBuf::from(format!("/tmp/rockhopper-{}", crate::syscalls::uid())));
     dir.join("rockhopper.sock")
 }
 
@@ -173,7 +173,7 @@ fn private_dir(dir: &std::path::Path) -> std::io::Result<()> {
         Err(e) => return Err(e),
     }
     let meta = std::fs::symlink_metadata(dir)?;
-    if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } || meta.mode() & 0o077 != 0 {
+    if !meta.is_dir() || meta.uid() != crate::syscalls::uid() || meta.mode() & 0o077 != 0 {
         return Err(std::io::Error::other(format!(
             "{} must be a directory owned by you with mode 0700",
             dir.display()
