@@ -15,9 +15,9 @@ use gpui_kit::base::Root;
 use gpui_kit::component::theme::{Theme, ThemeMode};
 use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Bounds, ClipboardItem, Context, Pixels, PlatformDisplay, Point,
-    Styled as _, WeakEntity, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
-    px, size, transparent_black,
+    AnyWindowHandle, AppContext as _, Bounds, ClipboardItem, Context, Pixels, PlatformDisplay,
+    Point, Styled as _, WeakEntity, WindowBackgroundAppearance, WindowBounds, WindowKind,
+    WindowOptions, px, size, transparent_black,
 };
 
 use crate::apps::{self, App as DesktopApp};
