@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::apps::App;
 use crate::commands::Command;
 use crate::history::History;
-use crate::niri::Window;
+use crate::niri::{CommandScope, FocusedWindowSnapshot, NIRI_COMMANDS, NiriCommand, Window};
 use crate::search::Candidate;
 use crate::system::SystemCommand;
 
@@ -19,6 +19,13 @@ pub enum Item {
         app: Option<usize>,
     },
     System(SystemCommand),
+    /// A searchable niri command, bound to the window focused when the
+    /// launcher opened.
+    NiriCommand {
+        command: NiriCommand,
+        window_id: Option<u64>,
+        is_floating: bool,
+    },
     /// A configured command, with the window it acts on (the focused one)
     /// and that window's app when known.
     Command {
@@ -108,6 +115,29 @@ pub enum Kind {
     Command,
 }
 
+fn configured_key_for_niri_command(command: &NiriCommand) -> Option<&'static str> {
+    match command.key {
+        "niri:toggle-fullscreen" => Some("niri-fullscreen"),
+        "niri:toggle-floating" => Some("niri-floating"),
+        "niri:center-window" => Some("niri-center"),
+        _ => None,
+    }
+}
+
+fn configured_keywords_for_niri_command<'a>(
+    command: &NiriCommand,
+    configured: &'a [Command],
+    defaults: &[Command],
+) -> Option<&'a [String]> {
+    let key = configured_key_for_niri_command(command)?;
+    let configured = configured.iter().find(|command| command.key == key)?;
+    let default = defaults.iter().find(|command| command.key == key)?;
+    (configured.name == default.name
+        && configured.run == default.run
+        && configured.keywords != default.keywords)
+        .then_some(configured.keywords.as_slice())
+}
+
 /// Apps, then windows, then commands. Commands that act on a window are
 /// listed only when a window has focus.
 pub fn entries(
@@ -115,6 +145,8 @@ pub fn entries(
     windows: &[Window],
     commands: &[Command],
     clipboard: bool,
+    niri_available: bool,
+    focused_window: Option<FocusedWindowSnapshot>,
 ) -> Vec<Entry> {
     let app_of = |window: &Window| {
         window
@@ -169,9 +201,71 @@ pub fn entries(
         },
     });
     let focused = windows.iter().find(|w| w.is_focused);
-    let command_entries = commands
+    let window_id = focused_window.map(|window| window.id);
+    let is_floating = focused_window.is_some_and(|window| window.is_floating);
+    let default_commands = crate::commands::resolve(&Default::default());
+    let niri_entries: Vec<_> = if niri_available {
+        NIRI_COMMANDS
+            .iter()
+            .copied()
+            .filter(|command| {
+                configured_key_for_niri_command(command)
+                    .is_none_or(|key| commands.iter().any(|configured| configured.key == key))
+            })
+            .filter(|command| command.scope == CommandScope::Overview || window_id.is_some())
+            .map(|command| {
+                let name = command.name(is_floating);
+                let secondary: Vec<String> =
+                    configured_keywords_for_niri_command(&command, commands, &default_commands)
+                        .map_or_else(
+                            || {
+                                command
+                                    .keywords
+                                    .iter()
+                                    .map(|keyword| (*keyword).into())
+                                    .collect()
+                            },
+                            |keywords| keywords.to_vec(),
+                        );
+                Entry {
+                    item: Item::NiriCommand {
+                        command,
+                        window_id,
+                        is_floating,
+                    },
+                    candidate: Candidate {
+                        name: name.into(),
+                        secondary,
+                        key: Some(command.key.into()),
+                    },
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let command_entries: Vec<_> = commands
         .iter()
         .filter(|c| focused.is_some() || !c.needs_window())
+        .filter(|configured| {
+            let Some(default) = default_commands
+                .iter()
+                .find(|default| default.key == configured.key)
+            else {
+                return true;
+            };
+            if configured.name != default.name || configured.run != default.run {
+                return true;
+            }
+            !niri_entries.iter().any(|entry| {
+                matches!(
+                    &entry.item,
+                    Item::NiriCommand { command: native, .. }
+                        if configured_key_for_niri_command(native)
+                            == Some(configured.key.as_str())
+                )
+            })
+        })
         .map(|command| Entry {
             candidate: Candidate {
                 name: command.name.clone(),
@@ -183,7 +277,8 @@ pub fn entries(
                 window: focused.filter(|_| command.needs_window()).cloned(),
                 app: focused.filter(|_| command.needs_window()).and_then(app_of),
             },
-        });
+        })
+        .collect();
     let clipboard_entry = clipboard.then(|| Entry {
         item: Item::Clipboard,
         candidate: Candidate {
@@ -204,6 +299,7 @@ pub fn entries(
         .chain(window_entries)
         .chain(system_entries)
         .chain(command_entries)
+        .chain(niri_entries)
         .chain(clipboard_entry)
         .chain([emoji_entry])
         .collect()
@@ -214,7 +310,11 @@ impl Item {
         match self {
             Self::App(_) => Kind::App,
             Self::Window { .. } => Kind::Window,
-            Self::System(_) | Self::Command { .. } | Self::Clipboard | Self::Emoji => Kind::Command,
+            Self::System(_)
+            | Self::Command { .. }
+            | Self::NiriCommand { .. }
+            | Self::Clipboard
+            | Self::Emoji => Kind::Command,
         }
     }
 
@@ -223,6 +323,11 @@ impl Item {
             Self::App(i) => apps[*i].name.clone(),
             Self::Window { window, .. } => window.title.clone(),
             Self::System(cmd) => cmd.name().into(),
+            Self::NiriCommand {
+                command,
+                is_floating,
+                ..
+            } => command.name(*is_floating).into(),
             Self::Command { command, .. } => command.name.clone(),
             Self::Clipboard => "Clipboard History".into(),
             Self::Emoji => "Search Emoji".into(),
@@ -243,7 +348,7 @@ impl Item {
                 let parts: Vec<String> = owner.into_iter().chain(place).collect();
                 (!parts.is_empty()).then(|| parts.join(" · "))
             }
-            Self::System(_) => None,
+            Self::System(_) | Self::NiriCommand { .. } => None,
             // The window it acts on.
             Self::Command {
                 window: Some(window),
@@ -265,7 +370,11 @@ impl Item {
             Self::App(i) if apps[*i].terminal => "Terminal",
             Self::App(_) => "Application",
             Self::Window { .. } => "Window",
-            Self::System(_) | Self::Command { .. } | Self::Clipboard | Self::Emoji => "Command",
+            Self::System(_)
+            | Self::Command { .. }
+            | Self::NiriCommand { .. }
+            | Self::Clipboard
+            | Self::Emoji => "Command",
         }
     }
 
@@ -290,6 +399,7 @@ impl Item {
                 window: Some(_), ..
             } => ItemIcon::Symbol(Symbol::Window),
             Self::Command { .. } => ItemIcon::Symbol(Symbol::Command),
+            Self::NiriCommand { .. } => ItemIcon::Symbol(Symbol::Window),
             Self::Clipboard => ItemIcon::Symbol(Symbol::Clipboard),
             Self::Emoji => ItemIcon::Symbol(Symbol::Emoji),
         }
@@ -300,7 +410,7 @@ impl Item {
         match self {
             Self::App(_) => "Open",
             Self::Window { .. } => "Switch to",
-            Self::System(_) | Self::Command { .. } => "Run",
+            Self::System(_) | Self::Command { .. } | Self::NiriCommand { .. } => "Run",
             Self::Clipboard | Self::Emoji => "Open",
         }
     }
@@ -311,6 +421,7 @@ impl Item {
             Self::Window { .. } => None,
             Self::System(cmd) => Some(cmd.key().into()),
             Self::Command { command, .. } => Some(command.history_key()),
+            Self::NiriCommand { command, .. } => Some(command.key.into()),
             Self::Clipboard => Some("rockhopper:clipboard".into()),
             Self::Emoji => Some("rockhopper:emoji".into()),
         }
@@ -383,7 +494,11 @@ impl Item {
                     }
                 }
             }
-            Self::System(_) | Self::Command { .. } | Self::Clipboard | Self::Emoji => {}
+            Self::System(_)
+            | Self::Command { .. }
+            | Self::NiriCommand { .. }
+            | Self::Clipboard
+            | Self::Emoji => {}
         }
         if self
             .history_key(apps)
@@ -533,6 +648,8 @@ mod tests {
             &[window("com.mitchellh.ghostty"), window("unknown")],
             &[],
             false,
+            false,
+            None,
         );
         let windows: Vec<_> = entries
             .iter()
@@ -558,7 +675,7 @@ mod tests {
         let apps = vec![app("com.mitchellh.ghostty.desktop", "Ghostty")];
         let commands = crate::commands::resolve(&Default::default());
         let count = |windows: &[Window]| {
-            entries(&apps, windows, &commands, false)
+            entries(&apps, windows, &commands, false, false, None)
                 .iter()
                 .filter(|e| matches!(e.item, Item::Command { .. }))
                 .count()
@@ -569,7 +686,7 @@ mod tests {
             ..window("com.mitchellh.ghostty")
         };
         assert_eq!(count(std::slice::from_ref(&focused)), commands.len());
-        let entries = entries(&apps, &[focused], &commands, false);
+        let entries = entries(&apps, &[focused], &commands, false, false, None);
         let fullscreen = entries
             .iter()
             .find(|e| e.candidate.name == "Toggle Fullscreen")
@@ -579,6 +696,57 @@ mod tests {
             Some("Ghostty · README.md")
         );
         assert_eq!(fullscreen.item.kind_of(), Kind::Command);
+    }
+
+    #[test]
+    fn niri_commands_are_gated_by_compositor_and_focused_window() {
+        let captured = Some(FocusedWindowSnapshot {
+            id: 41,
+            is_floating: false,
+        });
+        let on_other_compositor = entries(&[], &[], &[], false, false, captured);
+        assert!(
+            on_other_compositor
+                .iter()
+                .all(|entry| !matches!(entry.item, Item::NiriCommand { .. }))
+        );
+
+        let no_focused_window = entries(&[], &[], &[], false, true, None);
+        let names: Vec<_> = no_focused_window
+            .iter()
+            .filter_map(|entry| match &entry.item {
+                Item::NiriCommand { .. } => Some(entry.item.title(&[])),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["Open Overview"]);
+
+        let focused = Some(FocusedWindowSnapshot {
+            id: 41,
+            is_floating: true,
+        });
+        let with_focus = entries(&[], &[], &[], false, true, focused);
+        let commands: Vec<_> = with_focus
+            .iter()
+            .filter(|entry| matches!(entry.item, Item::NiriCommand { .. }))
+            .collect();
+        let names: Vec<_> = commands.iter().map(|entry| entry.item.title(&[])).collect();
+        assert_eq!(names.len(), 13);
+        assert!(names.contains(&"Tile Window".to_owned()));
+        assert!(!names.contains(&"Float Window".to_owned()));
+        let floating = commands
+            .iter()
+            .find(|entry| entry.item.title(&[]) == "Tile Window")
+            .unwrap();
+        assert!(matches!(
+            floating.item,
+            Item::NiriCommand {
+                window_id: Some(41),
+                is_floating: true,
+                ..
+            }
+        ));
+        assert!(floating.candidate.secondary.contains(&"float".into()));
     }
 
     #[test]
