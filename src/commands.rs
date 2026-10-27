@@ -110,6 +110,7 @@ mod tests {
             app_id: None,
             workspace: None,
             is_focused: true,
+            is_floating: false,
         }
     }
 

@@ -56,12 +56,14 @@ Starting Rockhopper from the compositor gives it your session's `PATH` and `XDG_
 | Result | `enter` | More with `ctrl-k` |
 |---|---|---|
 | Application | Open it | Its desktop actions (such as New Private Window), Copy Command, Reset Ranking |
-| Window | Switch to it (niri) | Open a new window of its app, Close Window, Copy Title, and every [window command](#commands) |
+| Window | Switch to it (niri) | Open a new window of its app, Close Window, Copy Title, Toggle Fullscreen, Toggle Windowed Fullscreen, Float/Tile, Center, set width to 1/3, 1/2, 2/3 or full, move to a workspace or monitor, bring to this workspace, Screenshot Window, and every [window command](#commands) |
 | Command | Run it | |
 | Lock Screen, Suspend | Run it | |
 | Log Out, Restart, Shut Down | Press `enter` twice: the first press asks for confirmation | |
 | Clipboard History | Open the clipboard history | |
 | Search Emoji | Open the emoji picker | |
+
+Window management actions are available for niri windows only and target the selected window by id, without focusing it first. **Move to Workspace…** searches workspaces by index, name and output; **Move to Monitor…** searches connected outputs. `esc` returns from either picker to the actions menu. Failed niri requests stay visible as an error in the launcher.
 
 Windows come from niri's IPC and show which app and workspace they belong to. On other compositors, no windows are listed.
 
@@ -265,4 +267,4 @@ nix develop -c cargo run -- show
 
 To drive the launcher in an automated test without touching the real keyboard, start the daemon with `ROCKHOPPER_TEST=1`. Then `rockhopper test-type <text>` replaces the search text, and `rockhopper test-key <key>` presses `down`, `up`, `left`, `right`, `tab`, `shift-tab`, `enter`, `shift-enter`, `escape` or `ctrl-k` in the open window. A daemon started without the variable refuses these. Test keys have no key release, so they can never confirm Log Out, Restart, Shut Down or Delete All.
 
-GPUI reports layer-shell surfaces as client-decorated, so gpui-kit wraps them in its window frame. Rockhopper makes its overlay 21px larger than the output on each side and moves it back with negative margins, so that frame sits off-screen. See `FRAME_INSET` in `src/ui/mod.rs`.
+GPUI reports layer-shell surfaces as client-decorated, so gpui-kit wraps them in its window frame. Rockhopper makes its overlay 21px larger than the output on each side and moves it back with negative margins, so that frame sits off-screen. See `FRAME_INSET` in `src/ui/launcher.rs`.
