@@ -42,6 +42,9 @@ Starting Rockhopper from the compositor gives it your session's `PATH` and `XDG_
 | Key | Action |
 |---|---|
 | type | Search apps, open windows and commands |
+| `>` | Search only commands (see [Prefixes](#prefixes)) |
+| `e` then space | Search emoji |
+| `backspace` in an empty search | Leave the mode a prefix opened |
 | `↓` `↑`, `ctrl-n` `ctrl-p`, `tab` `shift-tab` | Move the selection |
 | `enter` | Open the app, switch to the window or run the command |
 | `ctrl-k` | Show every action for the selected result |
@@ -53,7 +56,8 @@ Starting Rockhopper from the compositor gives it your session's `PATH` and `XDG_
 | Result | `enter` | More with `ctrl-k` |
 |---|---|---|
 | Application | Open it | Its desktop actions (such as New Private Window), Copy Command, Reset Ranking |
-| Window | Switch to it (niri) | Open a new window of its app, Close Window, Copy Title |
+| Window | Switch to it (niri) | Open a new window of its app, Close Window, Copy Title, and every [window command](#commands) |
+| Command | Run it | |
 | Lock Screen, Suspend | Run it | |
 | Log Out, Restart, Shut Down | Press `enter` twice: the first press asks for confirmation | |
 | Clipboard History | Open the clipboard history | |
@@ -62,6 +66,38 @@ Starting Rockhopper from the compositor gives it your session's `PATH` and `XDG_
 Windows come from niri's IPC and show which app and workspace they belong to. On other compositors, no windows are listed.
 
 Lock Screen runs `loginctl lock-session`, which your locker must listen for (for example through `swayidle` or `hypridle`). Log Out uses niri's quit action, or `loginctl terminate-session` elsewhere. Both can be replaced in the config.
+
+### Prefixes
+
+Typing a prefix at the start of the search narrows it to one kind of result. The prefix disappears from the search box and the mode's name shows beside it. Each mode lists everything it holds before you type, most used first. `esc` or `backspace` in an empty search goes back to the full search.
+
+| Mode | Default prefix |
+|---|---|
+| `commands`: Lock Screen, Log Out and the rest, your own commands, and window commands | `>` |
+| `emoji`: the emoji picker | `e ` (`e` then a space) |
+| `apps` | off |
+| `windows` | off |
+| `clipboard`: the clipboard history | off |
+
+A prefix that is a letter needs something after it, such as the space in `e `, so that searching for apps that start with `e` still works. Set prefixes under `prefixes` in the config. The longest matching prefix wins, so `>` and `>>` can both be used.
+
+### Commands
+
+Commands are command lines listed alongside everything else. `{window_id}` in a command is replaced by the id of the window that had focus when you opened the launcher. A command that uses it is only listed while some window has focus, which Rockhopper knows only on niri. The same commands appear under `ctrl-k` on any window result, acting on that window instead.
+
+The built-in commands act on the focused window through `niri msg action`:
+
+| Key | Name | Runs |
+|---|---|---|
+| `niri-fullscreen` | Toggle Fullscreen | `fullscreen-window` |
+| `niri-windowed-fullscreen` | Toggle Windowed Fullscreen | `toggle-windowed-fullscreen` |
+| `niri-maximize` | Maximize to Edges | `maximize-window-to-edges` |
+| `niri-floating` | Toggle Floating | `toggle-window-floating` |
+| `niri-center` | Center Window | `center-window` |
+| `niri-screenshot` | Screenshot Window | `screenshot-window` |
+| `niri-close` | Close Window | `close-window` |
+
+Each runs with `--id {window_id}`. The launcher closes before a command runs, so commands that act on whatever has focus (such as `niri msg action maximize-column`) work too. The defaults live in [`src/defaults.json`](src/defaults.json), which both Rockhopper and the Home Manager module read.
 
 Ranking is fuzzy, using the [nucleo](https://github.com/helix-editor/nucleo) matcher. Names that start with what you typed rank higher. Apps you open often or recently get a boost that fades over weeks. The history lives in `$XDG_STATE_HOME/rockhopper/history.json`.
 
@@ -117,6 +153,21 @@ clipboard:           # read when Rockhopper starts
   enabled: true
   max_entries: 200
   images: true
+prefixes:            # null turns one off
+  commands: ">"
+  emoji: "e "
+  apps: null
+  windows: "w "
+  clipboard: null
+commands:            # merged with the built-in ones by key
+  niri-fullscreen:
+    keywords: [big]  # override one field of a built-in command
+  niri-close:
+    enabled: false   # hide a built-in command
+  half-width:        # add your own; name and run are required
+    name: Half Width
+    keywords: [resize]
+    run: [niri, msg, action, set-window-width, --id, "{window_id}", "50%"]
 ```
 
 On niri, Rockhopper opens on the focused output, which it asks niri for over `$NIRI_SOCKET`. On other compositors it opens on the primary output unless `appearance.output` is set.
@@ -179,7 +230,27 @@ nix run github:korora-tech/rockhopper
 }
 ```
 
-`settings` is written to `config.yaml`, in the format described above. `programs.rockhopper.package` picks the package; it defaults to `pkgs.rockhopper` when the overlay is applied. `programs.rockhopper.systemd.enable` runs `rockhopper daemon` as a user service bound to `graphical-session.target`. That service only sees the systemd user environment, so make sure `PATH` and `XDG_DATA_DIRS` are imported into it, or use your compositor's autostart instead.
+Prefixes and commands have their own options, with the built-in ones as defaults:
+
+```nix
+programs.rockhopper = {
+  prefixes = {
+    emoji = ":";      # instead of "e "
+    windows = "w ";
+    commands = null;  # turn off
+  };
+  commands = {
+    niri-fullscreen.keywords = [ "big" ];  # change one field of a built-in
+    niri-close.enable = false;              # hide one
+    half-width = {
+      name = "Half Width";
+      run = [ "niri" "msg" "action" "set-window-width" "--id" "{window_id}" "50%" ];
+    };
+  };
+};
+```
+
+`settings` holds everything else and is written to `config.yaml` along with them, in the format described above; setting `prefixes` or `commands` inside `settings` is an error. `programs.rockhopper.package` picks the package; it defaults to `pkgs.rockhopper` when the overlay is applied. `programs.rockhopper.systemd.enable` runs `rockhopper daemon` as a user service bound to `graphical-session.target`. That service only sees the systemd user environment, so make sure `PATH` and `XDG_DATA_DIRS` are imported into it, or use your compositor's autostart instead.
 
 ## Development
 

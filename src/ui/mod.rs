@@ -18,6 +18,7 @@ use gpui_kit::*;
 
 use crate::apps::{self, App as DesktopApp};
 use crate::clipboard::{Clip, Clipboard};
+use crate::commands::{self, Command};
 use crate::config::{self, Config, ThemeChoice};
 use crate::emoji::{self, Emoji, EmojiFont};
 use crate::history::{self, History};
@@ -39,6 +40,8 @@ pub struct Launcher {
     apps: Rc<Vec<DesktopApp>>,
     /// Open windows, read from niri each time the launcher opens.
     windows: Vec<niri::Window>,
+    /// The configured commands, built-in ones included.
+    commands: Rc<Vec<Command>>,
     /// Everything searchable, rebuilt when apps or windows change.
     entries: Rc<Vec<Entry>>,
     fingerprint: Vec<(std::path::PathBuf, Option<SystemTime>)>,
@@ -87,11 +90,13 @@ impl Launcher {
         });
         let clips = Rc::new(clipboard.as_ref().map(Clipboard::clips).unwrap_or_default());
         let emojis = Rc::new(emoji::all(config.emoji.skin_tone));
+        let commands = Rc::new(commands::resolve(&config.commands));
         let mut this = Self {
             config,
             config_stamp: config::stamp(),
             apps: Rc::new(Vec::new()),
             windows: Vec::new(),
+            commands,
             entries: Rc::new(Vec::new()),
             fingerprint: Vec::new(),
             indexing: false,
@@ -152,12 +157,15 @@ impl Launcher {
             self.config_stamp = stamp;
             let config = config::load();
             let emoji_changed = config.emoji != self.config.emoji;
+            self.commands = Rc::new(commands::resolve(&config.commands));
             self.config = config;
             if emoji_changed {
                 self.load_emoji_font(cx);
             }
         }
         self.refresh_index(cx);
+        // Read before the launcher takes keyboard focus, so the focused
+        // window is the one window commands act on.
         self.windows = niri::windows();
         self.rebuild_entries();
         match self.config.appearance.theme {
@@ -269,6 +277,7 @@ impl Launcher {
         self.entries = Rc::new(items::entries(
             &self.apps,
             &self.windows,
+            &self.commands,
             self.clipboard.is_some(),
         ));
     }
@@ -395,6 +404,21 @@ impl Launcher {
                 Ok(())
             }
             (Item::System(cmd), Action::Primary) => cmd.run(&self.config),
+            (
+                Item::Command {
+                    command, window, ..
+                },
+                Action::Primary,
+            ) => {
+                self.history.record(&command.history_key(), history::now());
+                return self.run_command(command, window.as_ref(), cx);
+            }
+            (Item::Window { window, .. }, Action::Command(n)) => {
+                let Some(command) = self.commands.get(n).cloned() else {
+                    return;
+                };
+                return self.run_command(&command, Some(window), cx);
+            }
             (_, Action::Forget) => {
                 if let Some(key) = item.history_key(&self.apps) {
                     self.history.forget(&key);
@@ -416,6 +440,28 @@ impl Launcher {
         }
         report(result, item, &self.apps);
         self.hide(cx);
+    }
+
+    /// Close, then run `command` on `window`: commands that act on the
+    /// focused window without naming it need the launcher's focus gone.
+    fn run_command(
+        &mut self,
+        command: &Command,
+        window: Option<&niri::Window>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(argv) = command.argv(window) else {
+            eprintln!("rockhopper: {}: no window to act on", command.name);
+            return;
+        };
+        self.hide(cx);
+        let name = command.name.clone();
+        // After hide's own deferred close.
+        cx.defer(move |_| {
+            if let Err(err) = crate::system::spawn(&argv) {
+                eprintln!("rockhopper: {name}: {err}");
+            }
+        });
     }
 
     /// Rescan desktop entries in the background when their directories

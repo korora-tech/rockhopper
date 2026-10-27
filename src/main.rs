@@ -1,5 +1,6 @@
 mod apps;
 mod clipboard;
+mod commands;
 mod config;
 mod emoji;
 mod history;

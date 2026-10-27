@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use crate::apps::App;
+use crate::commands::Command;
 use crate::history::History;
 use crate::niri::Window;
 use crate::search::Candidate;
@@ -18,6 +19,13 @@ pub enum Item {
         app: Option<usize>,
     },
     System(SystemCommand),
+    /// A configured command, with the window it acts on (the focused one)
+    /// and that window's app when known.
+    Command {
+        command: Command,
+        window: Option<Window>,
+        app: Option<usize>,
+    },
     /// Opens the clipboard history.
     Clipboard,
     /// Opens the emoji picker.
@@ -36,6 +44,7 @@ pub enum Symbol {
     Restart,
     Power,
     Window,
+    Command,
 }
 
 pub enum ItemIcon {
@@ -52,8 +61,28 @@ pub struct Entry {
     pub candidate: Candidate,
 }
 
-/// Apps, then windows, then commands.
-pub fn entries(apps: &[App], windows: &[Window], clipboard: bool) -> Vec<Entry> {
+/// What a search scope lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    App,
+    Window,
+    Command,
+}
+
+/// Apps, then windows, then commands. Commands that act on a window are
+/// listed only when a window has focus.
+pub fn entries(
+    apps: &[App],
+    windows: &[Window],
+    commands: &[Command],
+    clipboard: bool,
+) -> Vec<Entry> {
+    let app_of = |window: &Window| {
+        window
+            .app_id
+            .as_deref()
+            .and_then(|id| apps.iter().position(|a| a.owns_window(id)))
+    };
     let app_entries = apps.iter().enumerate().map(|(i, app)| {
         let program = app
             .argv
@@ -75,10 +104,7 @@ pub fn entries(apps: &[App], windows: &[Window], clipboard: bool) -> Vec<Entry> 
         }
     });
     let window_entries = windows.iter().map(|window| {
-        let app = window
-            .app_id
-            .as_deref()
-            .and_then(|id| apps.iter().position(|a| a.owns_window(id)));
+        let app = app_of(window);
         Entry {
             candidate: Candidate {
                 name: window.title.clone(),
@@ -103,6 +129,22 @@ pub fn entries(apps: &[App], windows: &[Window], clipboard: bool) -> Vec<Entry> 
             key: Some(cmd.key().into()),
         },
     });
+    let focused = windows.iter().find(|w| w.is_focused);
+    let command_entries = commands
+        .iter()
+        .filter(|c| focused.is_some() || !c.needs_window())
+        .map(|command| Entry {
+            candidate: Candidate {
+                name: command.name.clone(),
+                secondary: command.keywords.clone(),
+                key: Some(command.history_key()),
+            },
+            item: Item::Command {
+                command: command.clone(),
+                window: focused.filter(|_| command.needs_window()).cloned(),
+                app: focused.filter(|_| command.needs_window()).and_then(app_of),
+            },
+        });
     let clipboard_entry = clipboard.then(|| Entry {
         item: Item::Clipboard,
         candidate: Candidate {
@@ -122,17 +164,27 @@ pub fn entries(apps: &[App], windows: &[Window], clipboard: bool) -> Vec<Entry> 
     app_entries
         .chain(window_entries)
         .chain(system_entries)
+        .chain(command_entries)
         .chain(clipboard_entry)
         .chain([emoji_entry])
         .collect()
 }
 
 impl Item {
+    pub fn kind_of(&self) -> Kind {
+        match self {
+            Self::App(_) => Kind::App,
+            Self::Window { .. } => Kind::Window,
+            Self::System(_) | Self::Command { .. } | Self::Clipboard | Self::Emoji => Kind::Command,
+        }
+    }
+
     pub fn title(&self, apps: &[App]) -> String {
         match self {
             Self::App(i) => apps[*i].name.clone(),
             Self::Window { window, .. } => window.title.clone(),
             Self::System(cmd) => cmd.name().into(),
+            Self::Command { command, .. } => command.name.clone(),
             Self::Clipboard => "Clipboard History".into(),
             Self::Emoji => "Search Emoji".into(),
         }
@@ -153,6 +205,16 @@ impl Item {
                 (!parts.is_empty()).then(|| parts.join(" · "))
             }
             Self::System(_) => None,
+            // The window it acts on.
+            Self::Command {
+                window: Some(window),
+                app,
+                ..
+            } => Some(match app {
+                Some(a) => format!("{} · {}", apps[*a].name, window.title),
+                None => window.title.clone(),
+            }),
+            Self::Command { .. } => None,
             Self::Clipboard => Some("Search what you copied".into()),
             Self::Emoji => Some("Find an emoji and copy it".into()),
         }
@@ -164,7 +226,7 @@ impl Item {
             Self::App(i) if apps[*i].terminal => "Terminal",
             Self::App(_) => "Application",
             Self::Window { .. } => "Window",
-            Self::System(_) | Self::Clipboard | Self::Emoji => "Command",
+            Self::System(_) | Self::Command { .. } | Self::Clipboard | Self::Emoji => "Command",
         }
     }
 
@@ -184,6 +246,11 @@ impl Item {
                 SystemCommand::Reboot => Symbol::Restart,
                 SystemCommand::PowerOff => Symbol::Power,
             }),
+            Self::Command { app: Some(a), .. } => app_icon(&apps[*a]),
+            Self::Command {
+                window: Some(_), ..
+            } => ItemIcon::Symbol(Symbol::Window),
+            Self::Command { .. } => ItemIcon::Symbol(Symbol::Command),
             Self::Clipboard => ItemIcon::Symbol(Symbol::Clipboard),
             Self::Emoji => ItemIcon::Symbol(Symbol::Emoji),
         }
@@ -194,7 +261,7 @@ impl Item {
         match self {
             Self::App(_) => "Open",
             Self::Window { .. } => "Switch to",
-            Self::System(_) => "Run",
+            Self::System(_) | Self::Command { .. } => "Run",
             Self::Clipboard | Self::Emoji => "Open",
         }
     }
@@ -204,13 +271,15 @@ impl Item {
             Self::App(i) => Some(apps[*i].id.clone()),
             Self::Window { .. } => None,
             Self::System(cmd) => Some(cmd.key().into()),
+            Self::Command { command, .. } => Some(command.history_key()),
             Self::Clipboard => Some("rockhopper:clipboard".into()),
             Self::Emoji => Some("rockhopper:emoji".into()),
         }
     }
 
     /// Everything that can be done with this item, the `enter` action first.
-    pub fn actions(&self, apps: &[App], history: &History) -> Vec<ActionDef> {
+    /// A window also offers every command that acts on a window.
+    pub fn actions(&self, apps: &[App], commands: &[Command], history: &History) -> Vec<ActionDef> {
         let mut actions = vec![ActionDef::new(Action::Primary, self.verb())];
         match self {
             Self::App(i) => {
@@ -232,8 +301,14 @@ impl Item {
                 }
                 actions.push(ActionDef::new(Action::CloseWindow, "Close Window"));
                 actions.push(ActionDef::new(Action::CopyTitle, "Copy Title"));
+                for (n, command) in commands.iter().enumerate() {
+                    // Such as a configured Close Window.
+                    if command.needs_window() && !actions.iter().any(|a| a.label == command.name) {
+                        actions.push(ActionDef::new(Action::Command(n), &command.name));
+                    }
+                }
             }
-            Self::System(_) | Self::Clipboard | Self::Emoji => {}
+            Self::System(_) | Self::Command { .. } | Self::Clipboard | Self::Emoji => {}
         }
         if self
             .history_key(apps)
@@ -255,6 +330,8 @@ pub enum Action {
     NewInstance,
     CloseWindow,
     CopyTitle,
+    /// Index into the commands, run on this window.
+    Command(usize),
     /// Drop the item from launch history.
     Forget,
 }
@@ -315,6 +392,7 @@ mod tests {
         let entries = entries(
             &apps,
             &[window("com.mitchellh.ghostty"), window("unknown")],
+            &[],
             false,
         );
         let windows: Vec<_> = entries
@@ -337,11 +415,40 @@ mod tests {
     }
 
     #[test]
+    fn window_commands_need_a_focused_window() {
+        let apps = vec![app("com.mitchellh.ghostty.desktop", "Ghostty")];
+        let commands = crate::commands::resolve(&Default::default());
+        let count = |windows: &[Window]| {
+            entries(&apps, windows, &commands, false)
+                .iter()
+                .filter(|e| matches!(e.item, Item::Command { .. }))
+                .count()
+        };
+        assert_eq!(count(&[window("com.mitchellh.ghostty")]), 0);
+        let focused = Window {
+            is_focused: true,
+            ..window("com.mitchellh.ghostty")
+        };
+        assert_eq!(count(std::slice::from_ref(&focused)), commands.len());
+        let entries = entries(&apps, &[focused], &commands, false);
+        let fullscreen = entries
+            .iter()
+            .find(|e| e.candidate.name == "Toggle Fullscreen")
+            .unwrap();
+        assert_eq!(
+            fullscreen.item.subtitle(&apps).as_deref(),
+            Some("Ghostty · README.md")
+        );
+        assert_eq!(fullscreen.item.kind_of(), Kind::Command);
+    }
+
+    #[test]
     fn action_lists() {
         let apps = vec![app("a.desktop", "A")];
+        let commands = crate::commands::resolve(&Default::default());
         let mut history = History::default();
         let labels = |item: &Item, h: &History| -> Vec<String> {
-            item.actions(&apps, h)
+            item.actions(&apps, &commands, h)
                 .into_iter()
                 .map(|a| a.label)
                 .collect()
@@ -360,9 +467,13 @@ mod tests {
             app: Some(0),
         };
         assert_eq!(
-            labels(&w, &history),
+            labels(&w, &history)[..4],
             ["Switch to", "Open New A", "Close Window", "Copy Title"]
         );
+        let after: Vec<String> = labels(&w, &history)[4..].to_vec();
+        assert!(after.contains(&"Toggle Fullscreen".to_string()));
+        // The configured Close Window is not offered twice.
+        assert!(!after.contains(&"Close Window".to_string()));
         assert_eq!(
             labels(&Item::System(SystemCommand::Lock), &history),
             ["Run"]

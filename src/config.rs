@@ -1,10 +1,13 @@
 //! `$XDG_CONFIG_HOME/rockhopper/config.yaml`, usually written by the Home
 //! Manager module. Every key is optional.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
 use serde::Deserialize;
+
+use crate::commands::CommandConfig;
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -18,6 +21,81 @@ pub struct Config {
     pub system: System,
     pub clipboard: ClipboardConfig,
     pub emoji: EmojiConfig,
+    /// Text that, typed first, narrows the search to one kind of result.
+    pub prefixes: Prefixes,
+    /// Commands by key, laid over the built-in ones.
+    pub commands: BTreeMap<String, CommandConfig>,
+}
+
+/// What a prefix narrows the search to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    Apps,
+    Windows,
+    Commands,
+    Emoji,
+    Clipboard,
+}
+
+/// A prefix per scope; `None` or empty turns it off. The defaults are in
+/// `defaults.json`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Prefixes {
+    pub apps: Option<String>,
+    pub windows: Option<String>,
+    pub commands: Option<String>,
+    pub emoji: Option<String>,
+    pub clipboard: Option<String>,
+}
+
+impl Default for Prefixes {
+    fn default() -> Self {
+        // Not `Prefixes` itself: its serde default would call this again.
+        #[derive(Deserialize)]
+        struct Raw {
+            apps: Option<String>,
+            windows: Option<String>,
+            commands: Option<String>,
+            emoji: Option<String>,
+            clipboard: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct Defaults {
+            prefixes: Raw,
+        }
+        let p = serde_json::from_str::<Defaults>(crate::commands::DEFAULTS)
+            .expect("defaults.json is valid")
+            .prefixes;
+        Self {
+            apps: p.apps,
+            windows: p.windows,
+            commands: p.commands,
+            emoji: p.emoji,
+            clipboard: p.clipboard,
+        }
+    }
+}
+
+impl Prefixes {
+    /// The scope whose prefix `text` starts with, and the text after it. The
+    /// longest prefix wins, so `>` and `>>` can both be set.
+    pub fn split<'a>(&self, text: &'a str) -> Option<(Scope, &'a str)> {
+        [
+            (Scope::Apps, &self.apps),
+            (Scope::Windows, &self.windows),
+            (Scope::Commands, &self.commands),
+            (Scope::Emoji, &self.emoji),
+            (Scope::Clipboard, &self.clipboard),
+        ]
+        .into_iter()
+        .filter_map(|(scope, prefix)| {
+            let prefix = prefix.as_deref().filter(|p| !p.is_empty())?;
+            Some((scope, prefix, text.strip_prefix(prefix)?))
+        })
+        .max_by_key(|(_, prefix, _)| prefix.len())
+        .map(|(scope, _, rest)| (scope, rest))
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -101,6 +179,8 @@ impl Default for Config {
             system: System::default(),
             clipboard: ClipboardConfig::default(),
             emoji: EmojiConfig::default(),
+            prefixes: Prefixes::default(),
+            commands: BTreeMap::new(),
         }
     }
 }
@@ -202,6 +282,29 @@ mod tests {
     fn skin_tone() {
         let c = parse("emoji:\n  skin_tone: medium-dark\n").unwrap();
         assert_eq!(c.emoji.skin_tone, crate::emoji::SkinTone::MediumDark);
+    }
+
+    #[test]
+    fn prefixes() {
+        let p = Prefixes::default();
+        assert_eq!(p.split(">full"), Some((Scope::Commands, "full")));
+        assert_eq!(p.split("e rocket"), Some((Scope::Emoji, "rocket")));
+        assert_eq!(p.split("emacs"), None);
+        let c = parse("prefixes:\n  commands: null\n  windows: \"w \"\n  apps: \">>\"\n").unwrap();
+        assert_eq!(c.prefixes.split(">x"), None);
+        assert_eq!(c.prefixes.split(">>x"), Some((Scope::Apps, "x")));
+        assert_eq!(c.prefixes.split("w term"), Some((Scope::Windows, "term")));
+        assert_eq!(c.prefixes.emoji.as_deref(), Some("e "));
+    }
+
+    #[test]
+    fn commands() {
+        let c = parse("commands:\n  niri-close:\n    enabled: false\n  term:\n    name: Terminal\n    run: [ghostty]\n").unwrap();
+        assert_eq!(c.commands["niri-close"].enabled, Some(false));
+        assert_eq!(
+            c.commands["term"].run.as_deref(),
+            Some(&["ghostty".to_string()][..])
+        );
     }
 
     #[test]

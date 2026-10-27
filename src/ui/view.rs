@@ -16,9 +16,10 @@ use gpui_kit::*;
 use super::{Launcher, Start};
 use crate::apps::App as DesktopApp;
 use crate::clipboard::{Clip, Content};
+use crate::config::Scope;
 use crate::emoji::Emoji;
 use crate::history;
-use crate::items::{Action, ActionDef, Entry, Item, ItemIcon, Symbol};
+use crate::items::{Action, ActionDef, Entry, Item, ItemIcon, Kind, Symbol};
 use crate::search::{Candidate, Ranker};
 
 /// Most results listed for a query.
@@ -52,6 +53,9 @@ const CONFIRM_DELAY: Duration = Duration::from_millis(300);
 const PLACEHOLDER: &str = "Search apps, windows and commands…";
 const CLIPBOARD_PLACEHOLDER: &str = "Search clipboard history…";
 const EMOJI_PLACEHOLDER: &str = "Search emoji…";
+const APPS_PLACEHOLDER: &str = "Search apps…";
+const WINDOWS_PLACEHOLDER: &str = "Search windows…";
+const COMMANDS_PLACEHOLDER: &str = "Search commands…";
 
 actions!(
     rockhopper,
@@ -109,10 +113,24 @@ pub fn test_action(key: &str) -> Option<Box<dyn gpui_kit::Action>> {
 enum Mode {
     /// Apps, windows and commands; results index the launcher's entries.
     Search,
+    /// One kind of entry, all listed before anything is typed.
+    Only(Kind),
     /// Results index the launcher's clips.
     Clipboard,
     /// Results index the launcher's emoji, shown as a grid.
     Emoji,
+}
+
+impl From<Scope> for Mode {
+    fn from(scope: Scope) -> Self {
+        match scope {
+            Scope::Apps => Self::Only(Kind::App),
+            Scope::Windows => Self::Only(Kind::Window),
+            Scope::Commands => Self::Only(Kind::Command),
+            Scope::Emoji => Self::Emoji,
+            Scope::Clipboard => Self::Clipboard,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -189,13 +207,19 @@ impl LauncherView {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(PLACEHOLDER));
         input.update(cx, |state, cx| state.focus(window, cx));
         let subscriptions = vec![
-            cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.query = input.read(cx).value().to_string();
-                    this.selected = 0;
-                    this.rerank(cx);
-                }
-            }),
+            cx.subscribe_in(
+                &input,
+                window,
+                |this, input, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.query = input.read(cx).value().to_string();
+                        this.selected = 0;
+                        if !this.enter_prefixed_mode(window, cx) {
+                            this.rerank(cx);
+                        }
+                    }
+                },
+            ),
             // The index can finish, a window close or a copy land while open.
             cx.observe(&launcher, |this, _, cx| this.rerank(cx)),
         ];
@@ -232,23 +256,65 @@ impl LauncherView {
             .update(cx, |input, cx| input.set_value(text.to_owned(), window, cx));
         self.query = text.to_owned();
         self.selected = 0;
-        self.rerank(cx);
+        if !self.enter_prefixed_mode(window, cx) {
+            self.rerank(cx);
+        }
     }
 
     fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_mode_with(mode, String::new(), window, cx);
+    }
+
+    /// Switch to `mode` with `query` in the search box.
+    fn set_mode_with(
+        &mut self,
+        mode: Mode,
+        query: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.mode = mode;
         let placeholder = match mode {
             Mode::Search => PLACEHOLDER,
+            Mode::Only(Kind::App) => APPS_PLACEHOLDER,
+            Mode::Only(Kind::Window) => WINDOWS_PLACEHOLDER,
+            Mode::Only(Kind::Command) => COMMANDS_PLACEHOLDER,
             Mode::Clipboard => CLIPBOARD_PLACEHOLDER,
             Mode::Emoji => EMOJI_PLACEHOLDER,
         };
         self.input.update(cx, |input, cx| {
-            input.set_value("", window, cx);
+            input.set_value(query.clone(), window, cx);
             input.set_placeholder(placeholder, window, cx);
         });
-        self.query.clear();
+        self.query = query;
         self.selected = 0;
         self.rerank(cx);
+    }
+
+    /// Typing a configured prefix in the main search switches to its mode,
+    /// keeping what follows the prefix. Deferred: the input is mid-update
+    /// when it reports the change. Returns whether it switched.
+    fn enter_prefixed_mode(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+        if self.mode != Mode::Search {
+            return false;
+        }
+        let launcher = self.launcher.read(cx);
+        let Some((scope, rest)) = launcher.config.prefixes.split(&self.query) else {
+            return false;
+        };
+        if scope == Scope::Clipboard && launcher.clipboard.is_none() {
+            return false;
+        }
+        let (mode, rest) = (Mode::from(scope), rest.to_owned());
+        // Until then, list nothing rather than search results as the new
+        // mode's.
+        self.mode = mode;
+        self.results.clear();
+        self.menu = None;
+        cx.defer_in(window, move |this, window, cx| {
+            this.set_mode_with(mode, rest, window, cx)
+        });
+        true
     }
 
     fn rerank(&mut self, cx: &mut Context<Self>) {
@@ -257,6 +323,27 @@ impl LauncherView {
         let launcher = self.launcher.read(cx);
         self.results = match self.mode {
             Mode::Search if self.query.trim().is_empty() => Vec::new(),
+            Mode::Only(kind) => {
+                let pool: Vec<usize> = (0..launcher.entries.len())
+                    .filter(|&i| launcher.entries[i].item.kind_of() == kind)
+                    .collect();
+                if self.query.trim().is_empty() {
+                    most_used_first(pool, &launcher.entries, &launcher.history)
+                } else {
+                    let candidates: Vec<_> = pool
+                        .iter()
+                        .map(|&i| launcher.entries[i].candidate.clone())
+                        .collect();
+                    let mut ranked = self.ranker.rank(
+                        &candidates,
+                        &launcher.history,
+                        &self.query,
+                        history::now(),
+                    );
+                    ranked.truncate(MAX_RESULTS);
+                    ranked.into_iter().map(|i| pool[i]).collect()
+                }
+            }
             Mode::Search => {
                 let candidates: Vec<_> = launcher
                     .entries
@@ -372,7 +459,7 @@ impl LauncherView {
             self.run(target, action, window, cx);
         } else if let Some(&target) = self.results.get(self.selected) {
             let action = match self.mode {
-                Mode::Search => MenuAction::Item(ActionDef {
+                Mode::Search | Mode::Only(_) => MenuAction::Item(ActionDef {
                     action: Action::Primary,
                     label: String::new(),
                 }),
@@ -470,10 +557,10 @@ impl LauncherView {
         {
             let launcher = self.launcher.read(cx);
             let (title, actions) = match self.mode {
-                Mode::Search => {
+                Mode::Search | Mode::Only(_) => {
                     let item = &launcher.entries[target].item;
                     let actions = item
-                        .actions(&launcher.apps, &launcher.history)
+                        .actions(&launcher.apps, &launcher.commands, &launcher.history)
                         .into_iter()
                         .map(MenuAction::Item)
                         .collect();
@@ -507,7 +594,7 @@ impl LauncherView {
     }
 
     /// Escape closes the actions menu, then clears a query, then leaves the
-    /// clipboard history, then closes.
+    /// clipboard history, emoji or a prefix's mode, then closes.
     fn dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
         if self.menu.take().is_some() {
             self.confirming = None;
@@ -809,6 +896,9 @@ impl Render for LauncherView {
             .max(1.) as usize;
         let pill = match self.mode {
             Mode::Search => None,
+            Mode::Only(Kind::App) => Some("Apps"),
+            Mode::Only(Kind::Window) => Some("Windows"),
+            Mode::Only(Kind::Command) => Some("Commands"),
             Mode::Clipboard => Some("Clipboard"),
             Mode::Emoji => Some("Emoji"),
         };
@@ -950,6 +1040,10 @@ impl Render for LauncherView {
                 .get(self.selected)
                 .filter(|_| searching)
                 .map(|&e| entries[e].item.verb()),
+            Mode::Only(_) => self
+                .results
+                .get(self.selected)
+                .map(|&e| entries[e].item.verb()),
             Mode::Clipboard | Mode::Emoji => self.results.get(self.selected).map(|_| "Copy"),
         };
         let menu = self
@@ -1009,6 +1103,19 @@ impl Render for LauncherView {
             .on_action(cx.listener(Self::open))
             .on_action(cx.listener(Self::dismiss))
             .on_action(cx.listener(Self::toggle_actions))
+            // Backspace in an empty search box leaves a mode, as if deleting
+            // the prefix that entered it.
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "backspace"
+                    && !event.keystroke.modifiers.modified()
+                    && this.query.is_empty()
+                    && this.menu.is_none()
+                    && this.mode != Mode::Search
+                {
+                    cx.stop_propagation();
+                    this.set_mode(Mode::Search, window, cx);
+                }
+            }))
             .capture_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| {
                 if event.keystroke.key == "enter" {
                     this.confirm_released = true;
@@ -1025,6 +1132,24 @@ impl Render for LauncherView {
             })
             .child(panel)
     }
+}
+
+/// `pool` with what was used most and lately first; ties keep their order.
+fn most_used_first(
+    mut pool: Vec<usize>,
+    entries: &[Entry],
+    history: &crate::history::History,
+) -> Vec<usize> {
+    let now = history::now();
+    let frecency = |i: usize| {
+        entries[i]
+            .candidate
+            .key
+            .as_deref()
+            .map_or(0.0, |k| history.frecency(k, now))
+    };
+    pool.sort_by(|&a, &b| frecency(b).total_cmp(&frecency(a)));
+    pool
 }
 
 /// Recently used emoji, most frecent first, then the rest in Unicode order.
@@ -1215,6 +1340,7 @@ fn item_icon(icon: ItemIcon, theme: &Theme) -> AnyElement {
                 Symbol::Restart => Lucide::RotateCcw,
                 Symbol::Power => Lucide::Power,
                 Symbol::Window => Lucide::AppWindow,
+                Symbol::Command => Lucide::SquareTerminal,
                 Symbol::Clipboard => Lucide::ClipboardList,
                 Symbol::Emoji => Lucide::FaceSlightlySmiling,
                 Symbol::Text => Lucide::Type,

@@ -85,7 +85,8 @@ fn whoami() -> String {
     std::env::var("USER").unwrap_or_default()
 }
 
-fn spawn(argv: &[String]) -> std::io::Result<()> {
+/// Start `argv` detached, without waiting for it.
+pub fn spawn(argv: &[String]) -> std::io::Result<()> {
     let mut child = Command::new(&argv[0])
         .args(&argv[1..])
         .stdin(Stdio::null())

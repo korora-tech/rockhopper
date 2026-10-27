@@ -1,0 +1,46 @@
+{
+  "prefixes": {
+    "apps": null,
+    "windows": null,
+    "commands": ">",
+    "emoji": "e ",
+    "clipboard": null
+  },
+  "commands": {
+    "niri-fullscreen": {
+      "name": "Toggle Fullscreen",
+      "keywords": ["fullscreen", "maximize"],
+      "run": ["niri", "msg", "action", "fullscreen-window", "--id", "{window_id}"]
+    },
+    "niri-windowed-fullscreen": {
+      "name": "Toggle Windowed Fullscreen",
+      "keywords": ["fake fullscreen"],
+      "run": ["niri", "msg", "action", "toggle-windowed-fullscreen", "--id", "{window_id}"]
+    },
+    "niri-maximize": {
+      "name": "Maximize to Edges",
+      "keywords": ["maximize", "fill"],
+      "run": ["niri", "msg", "action", "maximize-window-to-edges", "--id", "{window_id}"]
+    },
+    "niri-floating": {
+      "name": "Toggle Floating",
+      "keywords": ["float", "tile"],
+      "run": ["niri", "msg", "action", "toggle-window-floating", "--id", "{window_id}"]
+    },
+    "niri-center": {
+      "name": "Center Window",
+      "keywords": ["centre"],
+      "run": ["niri", "msg", "action", "center-window", "--id", "{window_id}"]
+    },
+    "niri-screenshot": {
+      "name": "Screenshot Window",
+      "keywords": ["capture", "screen"],
+      "run": ["niri", "msg", "action", "screenshot-window", "--id", "{window_id}"]
+    },
+    "niri-close": {
+      "name": "Close Window",
+      "keywords": ["quit", "kill"],
+      "run": ["niri", "msg", "action", "close-window", "--id", "{window_id}"]
+    }
+  }
+}
