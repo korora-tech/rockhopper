@@ -37,7 +37,7 @@
             locale: navigator.language,
             timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
             userAgent: "rockhopper/" + spec.version,
-            containerDimensions: { width: window.innerWidth, height: window.innerHeight },
+            containerDimensions: { width: spec.width, maxHeight: 800 },
           },
         } });
         break;
@@ -52,6 +52,10 @@
       case "ui/open-link":
         ipc({ kind: "open", url: m.params && m.params.url });
         send({ id: m.id, result: {} });
+        break;
+      case "ui/notifications/size-changed":
+        // Fixed width, flexible height: the window follows the app's height.
+        if (m.params) ipc({ kind: "resize", height: m.params.height });
         break;
       case "ui/request-display-mode":
         send({ id: m.id, result: { mode: "inline" } });

@@ -509,6 +509,7 @@ impl Launcher {
         };
         let tool = tool.clone();
         let dark = self.config.appearance.theme == ThemeChoice::Dark;
+        let width = f64::from(self.config.appearance.width);
         let app_server = server.clone();
         cx.spawn(async move |this, cx| {
             let called = tool.clone();
@@ -530,6 +531,7 @@ impl Launcher {
                             result: outcome.raw,
                             server: app_server,
                             dark,
+                            width,
                         };
                         if let Err(err) = open_viewer(&spec) {
                             eprintln!("rockhopper: {name}: {err}");

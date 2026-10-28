@@ -33,6 +33,8 @@ pub struct Spec {
     pub result: Value,
     pub server: ServerConfig,
     pub dark: bool,
+    /// The window's width, in logical pixels. Its height follows the app.
+    pub width: f64,
 }
 
 /// The host page: the iframe, and the host half of the protocol. The app
@@ -40,9 +42,17 @@ pub struct Spec {
 /// and can only talk through `postMessage`.
 const HOST_PAGE: &str = include_str!("viewer.html");
 
+/// The window's size until the app says what it needs.
+const START_HEIGHT: f64 = 240.0;
+/// The tallest an app can ask for, and the shortest it is given.
+const MAX_HEIGHT: f64 = 800.0;
+const MIN_HEIGHT: f64 = 120.0;
+
 enum Reply {
     /// The user pressed Escape.
     Close,
+    /// The app reported the height it wants, in logical pixels.
+    Resize(f64),
     Result(Value, Value),
     Error(Value, String),
 }
@@ -76,13 +86,13 @@ pub fn run(path: &str) -> Result<(), String> {
     let event_loop = EventLoopBuilder::<Reply>::with_user_event().build();
     let window = WindowBuilder::new()
         .with_title(&spec.title)
-        .with_inner_size(LogicalSize::new(900.0, 640.0))
+        .with_inner_size(LogicalSize::new(spec.width, START_HEIGHT))
         // Shown once it is a layer surface, which must be set up first.
         .with_visible(false)
         .build(&event_loop)
         .map_err(|e| e.to_string())?;
     let proxy = event_loop.create_proxy();
-    float_over_desktop(&window, &proxy);
+    float_over_desktop(&window, &proxy, spec.width);
     let server = spec.server.clone();
     let boot = format!(
         "window.__spec = {};",
@@ -92,6 +102,7 @@ pub fn run(path: &str) -> Result<(), String> {
             "tool": spec.tool,
             "title": spec.title,
             "dark": spec.dark,
+            "width": spec.width,
             "version": env!("CARGO_PKG_VERSION"),
         })
     );
@@ -105,6 +116,10 @@ pub fn run(path: &str) -> Result<(), String> {
             };
             match message["kind"].as_str() {
                 Some("open") => open_link(message["url"].as_str().unwrap_or_default()),
+                Some("resize") => {
+                    let height = message["height"].as_f64().unwrap_or(0.0);
+                    _ = proxy.send_event(Reply::Resize(height));
+                }
                 Some("log") => eprintln!("rockhopper: mcp app: {}", message["data"]),
                 Some("proxy") => {
                     let (id, params) = (message["id"].clone(), message["params"].clone());
@@ -133,9 +148,10 @@ pub fn run(path: &str) -> Result<(), String> {
                 ..
             } => *flow = ControlFlow::Exit,
             Event::UserEvent(Reply::Close) => *flow = ControlFlow::Exit,
+            Event::UserEvent(Reply::Resize(height)) => resize(&window, spec.width, height),
             Event::UserEvent(reply) => {
                 let call = match reply {
-                    Reply::Close => return,
+                    Reply::Close | Reply::Resize(_) => return,
                     Reply::Result(id, result) => format!("window.__reply({id}, {result}, null)"),
                     Reply::Error(id, err) => {
                         format!("window.__reply({id}, null, {})", json!(err))
@@ -162,7 +178,7 @@ fn open_link(url: &str) {
 /// Show the window as a layer-shell overlay, centred like the launcher,
 /// where the compositor supports it; otherwise as an ordinary window. An
 /// overlay has no title bar, so Escape closes it.
-fn float_over_desktop(window: &tao::window::Window, proxy: &EventLoopProxy<Reply>) {
+fn float_over_desktop(window: &tao::window::Window, proxy: &EventLoopProxy<Reply>, width: f64) {
     let gtk_window = window.gtk_window();
     if gtk_layer_shell::is_supported() {
         gtk_window.init_layer_shell();
@@ -171,7 +187,7 @@ fn float_over_desktop(window: &tao::window::Window, proxy: &EventLoopProxy<Reply
         gtk_window.set_keyboard_mode(KeyboardMode::OnDemand);
         gtk_window.set_decorated(false);
         // A layer surface that is anchored nowhere is as big as it asks.
-        gtk_window.set_size_request(900, 640);
+        gtk_window.set_size_request(width as i32, START_HEIGHT as i32);
         let proxy = proxy.clone();
         gtk_window.connect_key_press_event(move |_, key| {
             if key.keyval() == gtk::gdk::keys::constants::Escape {
@@ -182,4 +198,14 @@ fn float_over_desktop(window: &tao::window::Window, proxy: &EventLoopProxy<Reply
         });
     }
     window.set_visible(true);
+}
+
+/// Fit the window's height to what an app asked for, within limits.
+fn resize(window: &tao::window::Window, width: f64, height: f64) {
+    let height = height.clamp(MIN_HEIGHT, MAX_HEIGHT);
+    // A layer surface that is anchored nowhere is as big as it asks.
+    window
+        .gtk_window()
+        .set_size_request(width as i32, height as i32);
+    window.set_inner_size(LogicalSize::new(width, height));
 }
