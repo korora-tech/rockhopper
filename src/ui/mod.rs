@@ -25,6 +25,7 @@ use crate::history::{self, History};
 use crate::ipc::{Request, TestInput};
 use crate::items::{self, Action, Entry, Item};
 use crate::mcp::{self, Tool};
+use crate::viewer;
 use crate::{icons, launch, niri};
 
 pub use assets::Assets;
@@ -501,12 +502,14 @@ impl Launcher {
     }
 
     /// Run `tool` in the background. A result with an MCP-UI page opens in
-    /// the browser; any other text result is copied to the clipboard.
+    /// the viewer window; any other text result is copied to the clipboard.
     fn call_mcp(&mut self, tool: &Tool, cx: &mut Context<Self>) {
         let Some(server) = self.config.mcp.get(&tool.server).cloned() else {
             return;
         };
         let tool = tool.clone();
+        let dark = self.config.appearance.theme == ThemeChoice::Dark;
+        let app_server = server.clone();
         cx.spawn(async move |this, cx| {
             let called = tool.clone();
             let outcome = cx
@@ -519,11 +522,16 @@ impl Launcher {
                     eprintln!("rockhopper: {name}: {}", outcome.text)
                 }
                 Ok(outcome) => {
-                    if let Some(html) = &outcome.html {
-                        let opened = mcp::write_page(html).and_then(|path| {
-                            crate::system::spawn(&["xdg-open".into(), path.display().to_string()])
-                        });
-                        if let Err(err) = opened {
+                    if let Some(html) = outcome.html {
+                        let spec = viewer::Spec {
+                            title: name.clone(),
+                            tool: tool.name,
+                            html,
+                            result: outcome.raw,
+                            server: app_server,
+                            dark,
+                        };
+                        if let Err(err) = open_viewer(&spec) {
                             eprintln!("rockhopper: {name}: {err}");
                         }
                     } else if !outcome.text.is_empty() {
@@ -577,6 +585,24 @@ pub enum Start {
     Search,
     Clipboard,
     Emoji,
+}
+
+/// Start a viewer window for an MCP App. If that cannot start, fall back to
+/// the browser, which shows the page without the host bridge.
+fn open_viewer(spec: &viewer::Spec) -> std::io::Result<()> {
+    let exe = std::env::current_exe()?;
+    let spec_path = viewer::write_spec(spec)?;
+    let started = crate::system::spawn(&[
+        exe.display().to_string(),
+        "view".into(),
+        spec_path.display().to_string(),
+    ]);
+    if started.is_ok() {
+        return Ok(());
+    }
+    _ = std::fs::remove_file(spec_path);
+    let page = mcp::write_page(&spec.html)?;
+    crate::system::spawn(&["xdg-open".into(), page.display().to_string()])
 }
 
 fn report(result: std::io::Result<()>, item: &Item, apps: &[DesktopApp]) {

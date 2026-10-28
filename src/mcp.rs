@@ -13,14 +13,14 @@ use std::process::{Child, ChildStdin, Command as Process, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const TIMEOUT: Duration = Duration::from_secs(20);
 
 /// One entry under `mcp:` in the config.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
     pub enabled: Option<bool>,
@@ -53,6 +53,8 @@ impl Tool {
 pub struct Outcome {
     pub text: String,
     pub html: Option<String>,
+    /// The `tools/call` result as the server sent it.
+    pub raw: Value,
     pub is_error: bool,
 }
 
@@ -232,6 +234,15 @@ pub fn call(config: &ServerConfig, tool: &Tool) -> Result<Outcome, String> {
     Ok(outcome)
 }
 
+/// Forward one request from an MCP App to its server. Only the calls an app
+/// may make are passed on.
+pub fn proxy(config: &ServerConfig, method: &str, params: Value) -> Result<Value, String> {
+    if !matches!(method, "tools/call" | "resources/read") {
+        return Err(format!("{method}: not allowed"));
+    }
+    Session::start(config)?.request(method, params)
+}
+
 fn html_of(resource: &Value) -> Option<String> {
     let html = resource["mimeType"]
         .as_str()
@@ -245,6 +256,7 @@ fn html_of(resource: &Value) -> Option<String> {
 fn parse_result(result: &Value) -> Outcome {
     let mut outcome = Outcome {
         is_error: result["isError"].as_bool().unwrap_or(false),
+        raw: result.clone(),
         ..Outcome::default()
     };
     let mut texts = Vec::new();
