@@ -11,7 +11,14 @@ use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::theme::Theme;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::*;
+use gpui_kit::{
+    Animation, AnimationExt as _, AnyElement, App, AppContext as _, Context, Div, Entity,
+    FontWeight, Image, ImageFormat, InteractiveElement as _, IntoElement, KeyBinding, KeyUpEvent,
+    Keystroke, MouseButton, ObjectFit, ParentElement as _, Render, ScrollStrategy, Stateful,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription,
+    UniformListScrollHandle, Window, actions, div, ease_out_quint, hsla, img, px, relative,
+    uniform_list, white,
+};
 
 use super::{Launcher, Start};
 use crate::apps::App as DesktopApp;
@@ -1387,8 +1394,7 @@ fn footer(verb: &str, menu_open: bool, theme: &Theme) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
-    // Not `super::*`: that brings in GPUI's `test` macro, shadowing Rust's.
-    use super::{frequent_first, title_case};
+    use super::*;
     use crate::emoji::{self, SkinTone};
     use crate::history::{self, History};
 
