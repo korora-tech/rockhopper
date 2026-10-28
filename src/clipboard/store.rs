@@ -45,6 +45,12 @@ pub enum Captured {
     Png(Vec<u8>),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum KeyCheck {
+    Keep,
+    Remove,
+}
+
 pub struct Store {
     dir: Option<PathBuf>,
     cipher: Option<Cipher>,
@@ -190,15 +196,15 @@ impl Store {
         }
         if let Some(image) = image {
             match self.write(&format!("{}.png", clip.id), &image) {
-                Some(()) => {}
-                None if self.dir.is_some() => return None,
-                None => {
+                Ok(true) => {}
+                Ok(false) => {
                     self.memory_images.insert(clip.id, image);
                 }
+                Err(_) => return None,
             }
         }
         if let Ok(meta) = serde_json::to_vec(&clip) {
-            self.write(&format!("{}.meta", clip.id), &meta);
+            _ = self.write(&format!("{}.meta", clip.id), &meta);
         }
         self.clips.insert(0, clip.clone());
         self.prune();
@@ -251,9 +257,11 @@ impl Store {
         }
     }
 
-    /// `None` when there is no disk store or the write failed.
-    fn write(&self, name: &str, plain: &[u8]) -> Option<()> {
-        let (dir, cipher) = (self.dir.as_ref()?, self.cipher.as_ref()?);
+    /// `Ok(false)` when there is no disk store, `Ok(true)` after a write.
+    fn write(&self, name: &str, plain: &[u8]) -> std::io::Result<bool> {
+        let (Some(dir), Some(cipher)) = (&self.dir, &self.cipher) else {
+            return Ok(false);
+        };
         let result = (|| {
             use std::os::unix::fs::OpenOptionsExt;
             let tmp = dir.join(format!("{name}.tmp"));
@@ -269,10 +277,10 @@ impl Store {
             std::fs::rename(&tmp, dir.join(name))
         })();
         match result {
-            Ok(()) => Some(()),
+            Ok(()) => Ok(true),
             Err(err) => {
                 eprintln!("rockhopper: could not save clipboard entry {name}: {err}");
-                None
+                Err(err)
             }
         }
     }
@@ -330,9 +338,8 @@ fn prepare(dir: &std::path::Path, cipher: &Cipher) -> std::io::Result<()> {
     }
 }
 
-/// Delete every history file in `dir`, readable or not. The key check goes
-/// too, unless `keep_key_check`.
-pub fn wipe(dir: &std::path::Path, keep_key_check: bool) {
+/// Delete every history file in `dir`, readable or not.
+pub(super) fn wipe(dir: &std::path::Path, key_check: KeyCheck) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -342,7 +349,7 @@ pub fn wipe(dir: &std::path::Path, keep_key_check: bool) {
         let ours = [".meta", ".png", ".tmp"]
             .iter()
             .any(|ext| name.ends_with(ext))
-            || (name == KEY_CHECK && !keep_key_check);
+            || (name == KEY_CHECK && key_check == KeyCheck::Remove);
         if ours {
             _ = std::fs::remove_file(entry.path());
         }
@@ -387,6 +394,21 @@ mod tests {
                 Content::Image { width, height } => format!("{width}x{height}"),
             })
             .collect()
+    }
+
+    #[test]
+    fn write_distinguishes_no_store_from_io_failure() {
+        let in_memory = Store::in_memory(1);
+        assert!(!in_memory.write("1.png", b"image").unwrap());
+
+        let path = dir("write-error");
+        std::fs::write(&path, b"not a directory").unwrap();
+        let mut persistent = Store::in_memory(1);
+        persistent.dir = Some(path.clone());
+        persistent.cipher = Some(Cipher::new(&[1; 32]));
+        let err = persistent.write("1.png", b"image").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotADirectory);
+        _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -443,12 +465,14 @@ mod tests {
             .collect();
         left.sort();
         assert_eq!(left, ["1.meta", "key.check"]);
-        wipe(&d, true);
+        wipe(&d, KeyCheck::Keep);
         let left: Vec<_> = std::fs::read_dir(&d)
             .unwrap()
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(left, ["key.check"]);
+        wipe(&d, KeyCheck::Remove);
+        assert!(std::fs::read_dir(&d).unwrap().next().is_none());
         _ = std::fs::remove_dir_all(&d);
     }
 

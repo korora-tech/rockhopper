@@ -22,6 +22,7 @@ use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_offer_v1:
 use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_source_v1;
 use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_source_v1::ZwlrDataControlSourceV1;
 
+use super::ImageCapture;
 use super::store::Captured;
 
 /// Password managers mark secrets with this; such copies are never kept.
@@ -82,7 +83,10 @@ impl Handle {
 
 /// Start watching. Each copy is passed to `on_copy` on a reader thread.
 /// `None` when the compositor lacks wlr data-control.
-pub fn start(images: bool, on_copy: impl Fn(Captured) + Send + Sync + 'static) -> Option<Handle> {
+pub fn start(
+    image_capture: ImageCapture,
+    on_copy: impl Fn(Captured) + Send + Sync + 'static,
+) -> Option<Handle> {
     let conn = Connection::connect_to_env().ok()?;
     let (globals, mut queue) = registry_queue_init::<State>(&conn).ok()?;
     let qh = queue.handle();
@@ -115,7 +119,7 @@ pub fn start(images: bool, on_copy: impl Fn(Captured) + Send + Sync + 'static) -
     let mut state = State {
         offers: HashMap::new(),
         source: None,
-        images,
+        images: image_capture,
         reads,
         conn: conn.clone(),
     };
@@ -186,7 +190,7 @@ struct State {
     offers: HashMap<ObjectId, Vec<String>>,
     /// The selection we set, with its bytes.
     source: Option<(ZwlrDataControlSourceV1, Arc<Vec<u8>>)>,
-    images: bool,
+    images: ImageCapture,
     /// Hands each selection to the reader thread.
     reads: mpsc::Sender<(UnixStream, &'static str)>,
     conn: Connection,
@@ -194,7 +198,7 @@ struct State {
 
 /// Which type to read from an offer, if any. Text wins over images, since
 /// apps that offer both (office suites) mean the text.
-fn choose(mimes: &[String], images: bool) -> Option<&'static str> {
+fn choose(mimes: &[String], images: ImageCapture) -> Option<&'static str> {
     if mimes.iter().any(|m| SECRET_MIMES.contains(&m.as_str())) {
         return None;
     }
@@ -202,7 +206,9 @@ fn choose(mimes: &[String], images: bool) -> Option<&'static str> {
         .iter()
         .find(|t| mimes.iter().any(|m| m == *t))
         .copied()
-        .or_else(|| (images && mimes.iter().any(|m| m == PNG)).then_some(PNG))
+        .or_else(|| {
+            (images == ImageCapture::IncludeImages && mimes.iter().any(|m| m == PNG)).then_some(PNG)
+        })
 }
 
 impl State {
@@ -412,20 +418,38 @@ mod tests {
     #[test]
     fn choosing_a_type() {
         assert_eq!(
-            choose(&m(&["text/plain", "UTF8_STRING"]), true),
+            choose(
+                &m(&["text/plain", "UTF8_STRING"]),
+                ImageCapture::IncludeImages
+            ),
             Some("UTF8_STRING")
         );
-        assert_eq!(choose(&m(&["image/png", "text/html"]), true), Some(PNG));
-        assert_eq!(choose(&m(&["image/png", "text/html"]), false), None);
         assert_eq!(
-            choose(&m(&["image/png", "text/plain;charset=utf-8"]), true),
+            choose(&m(&["image/png", "text/html"]), ImageCapture::IncludeImages),
+            Some(PNG)
+        );
+        assert_eq!(
+            choose(&m(&["image/png", "text/html"]), ImageCapture::TextOnly),
+            None
+        );
+        assert_eq!(
+            choose(
+                &m(&["image/png", "text/plain;charset=utf-8"]),
+                ImageCapture::IncludeImages
+            ),
             Some("text/plain;charset=utf-8")
         );
         assert_eq!(
-            choose(&m(&["text/plain", "x-kde-passwordManagerHint"]), true),
+            choose(
+                &m(&["text/plain", "x-kde-passwordManagerHint"]),
+                ImageCapture::IncludeImages
+            ),
             None
         );
-        assert_eq!(choose(&m(&["application/x-thing"]), true), None);
+        assert_eq!(
+            choose(&m(&["application/x-thing"]), ImageCapture::IncludeImages),
+            None
+        );
     }
 
     #[test]

@@ -669,8 +669,18 @@ impl LauncherView {
             .child(row_text(
                 item.title(apps),
                 subtitle,
-                confirming,
-                ix == self.selected,
+                RowTextStyle {
+                    subtitle: if confirming {
+                        SubtitleTone::Alert
+                    } else {
+                        SubtitleTone::Normal
+                    },
+                    selection: if ix == self.selected {
+                        Selection::Selected
+                    } else {
+                        Selection::Unselected
+                    },
+                },
                 &theme,
             ))
             .child(kind_label(item.kind(apps), &theme))
@@ -699,8 +709,14 @@ impl LauncherView {
             .child(row_text(
                 clip_title(clip),
                 Some(subtitle),
-                false,
-                ix == self.selected,
+                RowTextStyle {
+                    subtitle: SubtitleTone::Normal,
+                    selection: if ix == self.selected {
+                        Selection::Selected
+                    } else {
+                        Selection::Unselected
+                    },
+                },
                 &theme,
             ))
             .child(kind_label(kind, &theme))
@@ -1267,11 +1283,27 @@ fn key(keys: &str) -> Keystroke {
     Keystroke::parse(keys).expect("valid key hint")
 }
 
+#[derive(Clone, Copy)]
+enum SubtitleTone {
+    Normal,
+    Alert,
+}
+
+#[derive(Clone, Copy)]
+enum Selection {
+    Unselected,
+    Selected,
+}
+
+struct RowTextStyle {
+    subtitle: SubtitleTone,
+    selection: Selection,
+}
+
 fn row_text(
     title: String,
     subtitle: Option<String>,
-    alert: bool,
-    selected: bool,
+    style: RowTextStyle,
     theme: &Theme,
 ) -> impl IntoElement {
     v_flex()
@@ -1281,10 +1313,9 @@ fn row_text(
             div()
                 .text_sm()
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(if selected {
-                    theme.accent_foreground
-                } else {
-                    theme.foreground
+                .text_color(match style.selection {
+                    Selection::Selected => theme.accent_foreground,
+                    Selection::Unselected => theme.foreground,
                 })
                 .truncate()
                 .child(title),
@@ -1293,10 +1324,9 @@ fn row_text(
             this.child(
                 div()
                     .text_xs()
-                    .text_color(if alert {
-                        theme.danger
-                    } else {
-                        theme.muted_foreground
+                    .text_color(match style.subtitle {
+                        SubtitleTone::Alert => theme.danger,
+                        SubtitleTone::Normal => theme.muted_foreground,
                     })
                     .truncate()
                     .child(subtitle),

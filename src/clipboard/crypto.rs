@@ -62,26 +62,31 @@ impl Cipher {
     }
 }
 
-fn keyring_key() -> Result<[u8; 32], String> {
-    let store = zbus_secret_service_keyring_store::Store::new().map_err(|e| e.to_string())?;
+fn keyring_key() -> std::io::Result<[u8; 32]> {
+    let store = zbus_secret_service_keyring_store::Store::new().map_err(std::io::Error::other)?;
     keyring_core::set_default_store(store);
     let entry = keyring_core::Entry::new_with_modifiers(
         SERVICE,
         KEY_USER,
         &HashMap::from([("label", "Rockhopper: clipboard history key")]),
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(std::io::Error::other)?;
     match entry.get_password() {
-        Ok(hex) => decode_hex(&hex).ok_or_else(|| "the stored key is malformed".into()),
+        Ok(hex) => decode_hex(&hex).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "the stored key is malformed",
+            )
+        }),
         Err(keyring_core::Error::NoEntry) => {
             let mut key = [0u8; 32];
-            getrandom::fill(&mut key).map_err(|e| e.to_string())?;
+            getrandom::fill(&mut key).map_err(std::io::Error::other)?;
             entry
                 .set_password(&encode_hex(&key))
-                .map_err(|e| e.to_string())?;
+                .map_err(std::io::Error::other)?;
             Ok(key)
         }
-        Err(e) => Err(e.to_string()),
+        Err(err) => Err(std::io::Error::other(err)),
     }
 }
 

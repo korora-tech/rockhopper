@@ -7,7 +7,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+
+use crate::config::FileStamp;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct App {
@@ -81,12 +82,15 @@ pub fn application_dirs() -> Vec<PathBuf> {
 
 /// Cheap change detection: each directory's resolved path and mtime. Nix
 /// profile switches change the resolved path; installs change the mtime.
-pub fn fingerprint(dirs: &[PathBuf]) -> Vec<(PathBuf, Option<SystemTime>)> {
+pub fn fingerprint(dirs: &[PathBuf]) -> Vec<FileStamp> {
     dirs.iter()
         .map(|d| {
             let real = std::fs::canonicalize(d).unwrap_or_else(|_| d.clone());
             let mtime = std::fs::metadata(&real).and_then(|m| m.modified()).ok();
-            (real, mtime)
+            FileStamp {
+                path: real,
+                modified: mtime,
+            }
         })
         .collect()
 }

@@ -9,7 +9,6 @@ mod assets;
 mod view;
 
 use std::rc::Rc;
-use std::time::SystemTime;
 
 use gpui_kit::base::Root;
 use gpui_kit::component::theme::{Theme, ThemeMode};
@@ -21,7 +20,7 @@ use gpui_kit::{
 };
 
 use crate::apps::{self, App as DesktopApp};
-use crate::clipboard::{Clip, Clipboard};
+use crate::clipboard::{Clip, Clipboard, ImageCapture};
 use crate::commands::{self, Command};
 use crate::config::{self, Config, ThemeChoice};
 use crate::emoji::{self, Emoji, EmojiFont};
@@ -48,7 +47,7 @@ pub struct Launcher {
     commands: Rc<Vec<Command>>,
     /// Everything searchable, rebuilt when apps or windows change.
     entries: Rc<Vec<Entry>>,
-    fingerprint: Vec<(std::path::PathBuf, Option<SystemTime>)>,
+    fingerprint: Vec<config::FileStamp>,
     indexing: bool,
     history: History,
     clipboard: Option<Clipboard>,
@@ -75,13 +74,15 @@ impl Launcher {
         let config = config::load();
         let clipboard = config.clipboard.enabled.then(|| {
             let (tx, rx) = async_channel::bounded::<()>(1);
-            let clipboard = Clipboard::start(
-                config.clipboard.max_entries,
-                config.clipboard.images,
-                move || {
+            let image_capture = if config.clipboard.images {
+                ImageCapture::IncludeImages
+            } else {
+                ImageCapture::TextOnly
+            };
+            let clipboard =
+                Clipboard::start(config.clipboard.max_entries, image_capture, move || {
                     _ = tx.try_send(());
-                },
-            );
+                });
             cx.spawn(async move |this, cx| {
                 while rx.recv().await.is_ok() {
                     if this.update(cx, |this, cx| this.refresh_clips(cx)).is_err() {

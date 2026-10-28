@@ -2,6 +2,7 @@
 //! secrets, and kept encrypted in `$XDG_STATE_HOME/rockhopper/clipboard`.
 
 mod crypto;
+mod policy;
 mod store;
 mod watch;
 
@@ -9,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub(crate) use policy::ImageCapture;
 use store::{Captured, Store};
 pub use store::{Clip, Content};
 
@@ -27,11 +29,15 @@ impl Clipboard {
     /// The keyring may have to ask to be unlocked, so the key is fetched off
     /// the caller's thread. Until it arrives, copies are kept in memory; then
     /// they move into the encrypted store.
-    pub fn start(max: usize, images: bool, on_change: impl Fn() + Send + Sync + 'static) -> Self {
+    pub fn start(
+        max: usize,
+        image_capture: ImageCapture,
+        on_change: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
         let store = Arc::new(Mutex::new(Store::in_memory(max)));
         let on_change = Arc::new(on_change);
         let (recorder, notify) = (store.clone(), on_change.clone());
-        let watcher = watch::start(images, move |captured: Captured| {
+        let watcher = watch::start(image_capture, move |captured: Captured| {
             let recorded = recorder
                 .lock()
                 .expect("clipboard store")
@@ -115,7 +121,14 @@ impl Clipboard {
         let mut store = self.store.lock().expect("clipboard store");
         store.clear();
         if let Some(dir) = dir() {
-            store::wipe(&dir, store.is_persistent());
+            store::wipe(
+                &dir,
+                if store.is_persistent() {
+                    store::KeyCheck::Keep
+                } else {
+                    store::KeyCheck::Remove
+                },
+            );
         }
     }
 }
