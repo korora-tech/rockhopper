@@ -15,6 +15,7 @@
   wayland,
   webkitgtk_4_1,
   gtk3,
+  gtk-layer-shell,
   libsoup_3,
   glib-networking,
 }:
@@ -52,6 +53,7 @@ rustPlatform.buildRustPackage {
     # The window for MCP Apps.
     webkitgtk_4_1
     gtk3
+    gtk-layer-shell
     libsoup_3
     glib-networking
   ];

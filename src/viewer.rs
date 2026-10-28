@@ -9,11 +9,13 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+use gtk::prelude::*;
+use gtk_layer_shell::{KeyboardMode, Layer, LayerShell};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::platform::unix::WindowExtUnix;
 use tao::window::WindowBuilder;
 use wry::{WebViewBuilder, WebViewBuilderExtUnix};
@@ -39,6 +41,8 @@ pub struct Spec {
 const HOST_PAGE: &str = include_str!("viewer.html");
 
 enum Reply {
+    /// The user pressed Escape.
+    Close,
     Result(Value, Value),
     Error(Value, String),
 }
@@ -73,9 +77,12 @@ pub fn run(path: &str) -> Result<(), String> {
     let window = WindowBuilder::new()
         .with_title(&spec.title)
         .with_inner_size(LogicalSize::new(900.0, 640.0))
+        // Shown once it is a layer surface, which must be set up first.
+        .with_visible(false)
         .build(&event_loop)
         .map_err(|e| e.to_string())?;
     let proxy = event_loop.create_proxy();
+    float_over_desktop(&window, &proxy);
     let server = spec.server.clone();
     let boot = format!(
         "window.__spec = {};",
@@ -125,8 +132,10 @@ pub fn run(path: &str) -> Result<(), String> {
                 event: WindowEvent::CloseRequested,
                 ..
             } => *flow = ControlFlow::Exit,
+            Event::UserEvent(Reply::Close) => *flow = ControlFlow::Exit,
             Event::UserEvent(reply) => {
                 let call = match reply {
+                    Reply::Close => return,
                     Reply::Result(id, result) => format!("window.__reply({id}, {result}, null)"),
                     Reply::Error(id, err) => {
                         format!("window.__reply({id}, null, {})", json!(err))
@@ -148,4 +157,29 @@ fn open_link(url: &str) {
     if let Err(err) = crate::system::spawn(&["xdg-open".into(), url.into()]) {
         eprintln!("rockhopper: mcp app: {err}");
     }
+}
+
+/// Show the window as a layer-shell overlay, centred like the launcher,
+/// where the compositor supports it; otherwise as an ordinary window. An
+/// overlay has no title bar, so Escape closes it.
+fn float_over_desktop(window: &tao::window::Window, proxy: &EventLoopProxy<Reply>) {
+    let gtk_window = window.gtk_window();
+    if gtk_layer_shell::is_supported() {
+        gtk_window.init_layer_shell();
+        gtk_window.set_namespace("rockhopper-view");
+        gtk_window.set_layer(Layer::Overlay);
+        gtk_window.set_keyboard_mode(KeyboardMode::OnDemand);
+        gtk_window.set_decorated(false);
+        // A layer surface that is anchored nowhere is as big as it asks.
+        gtk_window.set_size_request(900, 640);
+        let proxy = proxy.clone();
+        gtk_window.connect_key_press_event(move |_, key| {
+            if key.keyval() == gtk::gdk::keys::constants::Escape {
+                _ = proxy.send_event(Reply::Close);
+                return gtk::glib::Propagation::Stop;
+            }
+            gtk::glib::Propagation::Proceed
+        });
+    }
+    window.set_visible(true);
 }
