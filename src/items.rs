@@ -331,7 +331,7 @@ impl Item {
                 );
                 actions.push(ActionDef::new(Action::CopyCommand, "Copy Command"));
             }
-            Self::Window { app, .. } => {
+            Self::Window { window, app } => {
                 if let Some(a) = app {
                     actions.push(ActionDef::new(
                         Action::NewInstance,
@@ -340,6 +340,42 @@ impl Item {
                 }
                 actions.push(ActionDef::new(Action::CloseWindow, "Close Window"));
                 actions.push(ActionDef::new(Action::CopyTitle, "Copy Title"));
+                actions.push(ActionDef::new(
+                    Action::ToggleFullscreen,
+                    "Toggle Fullscreen",
+                ));
+                actions.push(ActionDef::new(
+                    Action::ToggleWindowedFullscreen,
+                    "Toggle Windowed Fullscreen",
+                ));
+                actions.push(ActionDef::new(
+                    Action::ToggleFloating,
+                    if window.is_floating {
+                        "Tile Window"
+                    } else {
+                        "Float Window"
+                    },
+                ));
+                actions.push(ActionDef::new(Action::CenterWindow, "Center Window"));
+                actions.extend([
+                    ActionDef::new(Action::SetWidthThird, "Set Width 1/3"),
+                    ActionDef::new(Action::SetWidthHalf, "Set Width 1/2"),
+                    ActionDef::new(Action::SetWidthTwoThirds, "Set Width 2/3"),
+                    ActionDef::new(Action::SetWidthFull, "Set Width Full"),
+                ]);
+                actions.push(ActionDef::new(
+                    Action::MoveToWorkspace,
+                    "Move to Workspace…",
+                ));
+                actions.push(ActionDef::new(Action::MoveToMonitor, "Move to Monitor…"));
+                actions.push(ActionDef::new(
+                    Action::BringToThisWorkspace,
+                    "Bring to This Workspace",
+                ));
+                actions.push(ActionDef::new(
+                    Action::ScreenshotWindow,
+                    "Screenshot Window",
+                ));
                 for (n, command) in commands.iter().enumerate() {
                     // Such as a configured Close Window.
                     if command.needs_window() && !actions.iter().any(|a| a.label == command.name) {
@@ -371,6 +407,18 @@ pub enum Action {
     CopyTitle,
     /// Index into the commands, run on this window.
     Command(usize),
+    ToggleFullscreen,
+    ToggleWindowedFullscreen,
+    ToggleFloating,
+    CenterWindow,
+    SetWidthThird,
+    SetWidthHalf,
+    SetWidthTwoThirds,
+    SetWidthFull,
+    MoveToWorkspace,
+    MoveToMonitor,
+    BringToThisWorkspace,
+    ScreenshotWindow,
     /// Drop the item from launch history.
     Forget,
 }
@@ -422,6 +470,7 @@ mod tests {
             app_id: Some(app_id.into()),
             workspace: Some("2".into()),
             is_focused: false,
+            is_floating: false,
         }
     }
 
@@ -557,8 +606,25 @@ mod tests {
             app: Some(0),
         };
         assert_eq!(
-            labels(&w, &history)[..4],
-            ["Switch to", "Open New A", "Close Window", "Copy Title"]
+            &labels(&w, &history)[..16],
+            [
+                "Switch to",
+                "Open New A",
+                "Close Window",
+                "Copy Title",
+                "Toggle Fullscreen",
+                "Toggle Windowed Fullscreen",
+                "Float Window",
+                "Center Window",
+                "Set Width 1/3",
+                "Set Width 1/2",
+                "Set Width 2/3",
+                "Set Width Full",
+                "Move to Workspace…",
+                "Move to Monitor…",
+                "Bring to This Workspace",
+                "Screenshot Window",
+            ]
         );
         let after: Vec<String> = labels(&w, &history)[4..].to_vec();
         assert!(after.contains(&"Toggle Fullscreen".to_string()));
@@ -568,5 +634,45 @@ mod tests {
             labels(&Item::System(SystemCommand::Lock), &history),
             ["Run"]
         );
+    }
+
+    #[test]
+    fn niri_window_actions_are_available_and_floating_label_tracks_state() {
+        let apps = vec![app("a.desktop", "A")];
+        let history = History::default();
+        let labels = |window: Window| {
+            Item::Window {
+                window,
+                app: Some(0),
+            }
+            .actions(&apps, &[], &history)
+            .into_iter()
+            .map(|a| a.label)
+            .collect::<Vec<_>>()
+        };
+
+        let expected = [
+            "Switch to",
+            "Open New A",
+            "Close Window",
+            "Copy Title",
+            "Toggle Fullscreen",
+            "Toggle Windowed Fullscreen",
+            "Float Window",
+            "Center Window",
+            "Set Width 1/3",
+            "Set Width 1/2",
+            "Set Width 2/3",
+            "Set Width Full",
+            "Move to Workspace…",
+            "Move to Monitor…",
+            "Bring to This Workspace",
+            "Screenshot Window",
+        ];
+        assert_eq!(labels(window("a")), expected);
+
+        let mut floating = window("a");
+        floating.is_floating = true;
+        assert_eq!(labels(floating)[6], "Tile Window");
     }
 }

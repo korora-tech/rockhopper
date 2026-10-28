@@ -48,6 +48,7 @@ const CONTEXT: &str = "Rockhopper";
 const MENU_ROW: f32 = 34.;
 const MENU_CHROME: f32 = 40.;
 const MENU_BOTTOM: f32 = 48.;
+const PICKER_VISIBLE_ROWS: f32 = 7.5;
 /// Added to [`CONTEXT`] while the emoji grid shows, for its arrow keys.
 const GRID_CONTEXT: &str = "Rockhopper EmojiGrid";
 const EMOJI_TILE: f32 = 64.;
@@ -182,10 +183,41 @@ enum Confirm {
     DeleteAllClips,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PickerKind {
+    Workspace,
+    Monitor,
+}
+
+#[derive(Clone)]
+enum PickerTarget {
+    Workspace(u64),
+    Monitor(String),
+}
+
+#[derive(Clone)]
+struct PickerEntry {
+    title: String,
+    subtitle: Option<String>,
+    candidate: Candidate,
+    target: PickerTarget,
+}
+
+/// A searchable second list opened from a window's actions menu.
+struct Picker {
+    kind: PickerKind,
+    window_id: u64,
+    entries: Vec<PickerEntry>,
+    results: Vec<usize>,
+    selected: usize,
+    query: String,
+}
+
 pub struct LauncherView {
     launcher: Entity<Launcher>,
     input: Entity<InputState>,
     scroll: UniformListScrollHandle,
+    picker_scroll: UniformListScrollHandle,
     ranker: Ranker,
     mode: Mode,
     query: String,
@@ -193,6 +225,7 @@ pub struct LauncherView {
     results: Vec<usize>,
     selected: usize,
     menu: Option<Menu>,
+    picker: Option<Picker>,
     confirming: Option<Confirm>,
     confirm_since: Instant,
     /// Whether `enter` was released since `confirming` was set. A held key
@@ -222,10 +255,16 @@ impl LauncherView {
                 window,
                 |this, input, event: &InputEvent, window, cx| {
                     if matches!(event, InputEvent::Change) {
-                        this.query = input.read(cx).value().to_string();
-                        this.selected = 0;
-                        if !this.enter_prefixed_mode(window, cx) {
-                            this.rerank(cx);
+                        let query = input.read(cx).value().to_string();
+                        if let Some(picker) = &mut this.picker {
+                            picker.query = query;
+                            this.rank_picker(cx);
+                        } else {
+                            this.query = query;
+                            this.selected = 0;
+                            if !this.enter_prefixed_mode(window, cx) {
+                                this.rerank(cx);
+                            }
                         }
                     }
                 },
@@ -237,12 +276,14 @@ impl LauncherView {
             launcher,
             input,
             scroll: UniformListScrollHandle::new(),
+            picker_scroll: UniformListScrollHandle::new(),
             ranker: Ranker::new(),
             mode: Mode::Search,
             query: String::new(),
             results: Vec::new(),
             selected: 0,
             menu: None,
+            picker: None,
             confirming: None,
             confirm_since: Instant::now(),
             confirm_released: false,
@@ -328,6 +369,9 @@ impl LauncherView {
     }
 
     fn rerank(&mut self, cx: &mut Context<Self>) {
+        if self.picker.is_some() {
+            return self.rank_picker(cx);
+        }
         self.menu = None;
         self.confirming = None;
         let launcher = self.launcher.read(cx);
@@ -389,6 +433,32 @@ impl LauncherView {
         cx.notify();
     }
 
+    fn rank_picker(&mut self, cx: &mut Context<Self>) {
+        let Some(picker) = &self.picker else {
+            return;
+        };
+        let query = picker.query.clone();
+        let candidates: Vec<_> = picker
+            .entries
+            .iter()
+            .map(|entry| entry.candidate.clone())
+            .collect();
+        let results = if query.trim().is_empty() {
+            (0..candidates.len()).collect()
+        } else {
+            let launcher = self.launcher.read(cx);
+            self.ranker
+                .rank(&candidates, &launcher.history, &query, history::now())
+        };
+        if let Some(picker) = &mut self.picker {
+            picker.results = results;
+            picker.selected = picker.selected.min(picker.results.len().saturating_sub(1));
+            self.picker_scroll
+                .scroll_to_item(picker.selected, ScrollStrategy::Top);
+        }
+        cx.notify();
+    }
+
     /// The list row holding the selection: in the grid, rows hold several.
     fn scroll_to_selected(&self, strategy: ScrollStrategy) {
         let row = match self.mode {
@@ -408,7 +478,16 @@ impl LauncherView {
     }
 
     fn step(&mut self, forward: bool, cx: &mut Context<Self>) {
-        if let Some(menu) = &mut self.menu {
+        if let Some(picker) = &mut self.picker {
+            let n = picker.results.len();
+            if n > 0 {
+                picker.selected = (picker.selected + if forward { 1 } else { n - 1 }) % n;
+                self.picker_scroll
+                    .scroll_to_item(picker.selected, ScrollStrategy::Nearest);
+            }
+            self.confirming = None;
+            cx.notify();
+        } else if let Some(menu) = &mut self.menu {
             let n = menu.actions.len();
             menu.selected = (menu.selected + if forward { 1 } else { n - 1 }) % n;
             self.confirming = None;
@@ -464,6 +543,9 @@ impl LauncherView {
     }
 
     fn open(&mut self, _: &Open, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.is_some() {
+            return self.choose_picker(cx);
+        }
         if let Some(menu) = &self.menu {
             let (target, action) = (menu.target, menu.actions[menu.selected].clone());
             self.run(target, action, window, cx);
@@ -545,6 +627,25 @@ impl LauncherView {
                     Item::Emoji => return self.set_mode(Mode::Emoji, window, cx),
                     _ => {}
                 }
+                if let Item::Window {
+                    window: selected, ..
+                } = &item
+                {
+                    match def.action {
+                        Action::MoveToWorkspace => {
+                            return self.open_picker(
+                                PickerKind::Workspace,
+                                selected.id,
+                                window,
+                                cx,
+                            );
+                        }
+                        Action::MoveToMonitor => {
+                            return self.open_picker(PickerKind::Monitor, selected.id, window, cx);
+                        }
+                        _ => {}
+                    }
+                }
                 if let (Item::System(cmd), Action::Primary) = (&item, def.action)
                     && cmd.needs_confirmation()
                     && !self.confirm(Confirm::Entry(target), cx)
@@ -588,7 +689,120 @@ impl LauncherView {
         }
     }
 
+    fn open_picker(
+        &mut self,
+        kind: PickerKind,
+        window_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (workspaces, outputs) = {
+            let launcher = self.launcher.read(cx);
+            (launcher.workspaces.clone(), launcher.outputs.clone())
+        };
+        let entries = match kind {
+            PickerKind::Workspace => workspaces
+                .into_iter()
+                .map(|workspace| {
+                    let name = workspace.name.as_deref().unwrap_or("Unnamed");
+                    let title = format!("Workspace {} · {name}", workspace.idx);
+                    let output = workspace.output.unwrap_or_else(|| "No output".into());
+                    PickerEntry {
+                        candidate: Candidate {
+                            name: title.clone(),
+                            secondary: vec![output.clone()],
+                            key: None,
+                        },
+                        title,
+                        subtitle: Some(output),
+                        target: PickerTarget::Workspace(workspace.id),
+                    }
+                })
+                .collect(),
+            PickerKind::Monitor => outputs
+                .into_iter()
+                .map(|output| PickerEntry {
+                    candidate: Candidate {
+                        name: output.name.clone(),
+                        secondary: vec!["monitor".into(), "display".into(), "output".into()],
+                        key: None,
+                    },
+                    title: output.name.clone(),
+                    subtitle: None,
+                    target: PickerTarget::Monitor(output.name),
+                })
+                .collect(),
+        };
+        self.picker = Some(Picker {
+            kind,
+            window_id,
+            entries,
+            results: Vec::new(),
+            selected: 0,
+            query: String::new(),
+        });
+        self.input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            input.set_placeholder(
+                match kind {
+                    PickerKind::Workspace => "Search workspaces…",
+                    PickerKind::Monitor => "Search monitors…",
+                },
+                window,
+                cx,
+            );
+        });
+        self.picker_scroll.scroll_to_item(0, ScrollStrategy::Top);
+        self.rank_picker(cx);
+    }
+
+    fn select_picker(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(picker) = &mut self.picker else {
+            return;
+        };
+        if ix >= picker.results.len() || picker.selected == ix {
+            return;
+        }
+        picker.selected = ix;
+        self.picker_scroll
+            .scroll_to_item(ix, ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
+    fn choose_picker(&mut self, cx: &mut Context<Self>) {
+        let Some((window_id, target, title)) = self.picker.as_ref().and_then(|picker| {
+            let &row = picker.results.get(picker.selected)?;
+            let entry = &picker.entries[row];
+            Some((picker.window_id, entry.target.clone(), entry.title.clone()))
+        }) else {
+            return;
+        };
+        let (result, label) = match target {
+            PickerTarget::Workspace(workspace_id) => (
+                crate::niri::move_window_to_workspace(window_id, workspace_id),
+                title,
+            ),
+            PickerTarget::Monitor(output) => {
+                let label = format!("Move window to {output}");
+                (
+                    crate::niri::move_window_to_monitor(window_id, output),
+                    label,
+                )
+            }
+        };
+        let succeeded = self.launcher.update(cx, |launcher, cx| {
+            launcher.finish_window_action(result, &label, cx)
+        });
+        if succeeded {
+            self.picker = None;
+            self.menu = None;
+        }
+    }
+
     fn toggle_actions(&mut self, _: &ToggleActions, _: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.is_some() {
+            return;
+        }
         self.confirming = None;
         if self.menu.take().is_none()
             && let Some(&target) = self.results.get(self.selected)
@@ -634,7 +848,15 @@ impl LauncherView {
     /// Escape closes the actions menu, then clears a query, then leaves the
     /// clipboard history, emoji or a prefix's mode, then closes.
     fn dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
-        if self.menu.take().is_some() {
+        if self.picker.take().is_some() {
+            let query = self.query.clone();
+            self.input.update(cx, |input, cx| {
+                input.set_value(query, window, cx);
+                input.set_placeholder(PLACEHOLDER, window, cx);
+            });
+            self.confirming = None;
+            cx.notify();
+        } else if self.menu.take().is_some() {
             self.confirming = None;
             cx.notify();
         } else if !self.query.is_empty() {
@@ -810,7 +1032,130 @@ impl LauncherView {
             .into_any_element()
     }
 
-    fn render_menu(&self, menu: &Menu, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_picker_row(
+        &self,
+        ix: usize,
+        entries: &[PickerEntry],
+        results: &[usize],
+        selected: usize,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let entry = &entries[results[ix]];
+        let title = entry.title.clone();
+        let subtitle = entry.subtitle.clone();
+        let is_selected = ix == selected;
+        h_flex()
+            .id(("picker-row", ix))
+            .w_full()
+            .h(px(MENU_ROW))
+            .px_2()
+            .gap_2()
+            .items_center()
+            .rounded(px(8.))
+            .text_sm()
+            .when(is_selected, |row| {
+                row.bg(theme.accent).text_color(theme.accent_foreground)
+            })
+            .on_mouse_move(cx.listener(move |this, _, _, cx| this.select_picker(ix, cx)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.select_picker(ix, cx);
+                this.choose_picker(cx);
+            }))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().truncate().child(title))
+                    .when_some(subtitle, |row, subtitle| {
+                        row.child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .truncate()
+                                .child(subtitle),
+                        )
+                    }),
+            )
+            .into_any_element()
+    }
+
+    fn render_picker(&self, picker: &Picker, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let entries = picker.entries.clone();
+        let results = picker.results.clone();
+        let result_count = results.len();
+        let selected = picker.selected;
+        let theme_rows = theme.clone();
+        let list = if results.is_empty() {
+            div()
+                .h(px(MENU_ROW))
+                .px_2()
+                .flex()
+                .items_center()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(if picker.query.trim().is_empty() {
+                    match picker.kind {
+                        PickerKind::Workspace => "No workspaces available",
+                        PickerKind::Monitor => "No monitors available",
+                    }
+                } else {
+                    "No matches"
+                })
+                .into_any_element()
+        } else {
+            uniform_list(
+                "picker-results",
+                result_count,
+                cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
+                    range
+                        .map(|ix| {
+                            this.render_picker_row(
+                                ix,
+                                &entries,
+                                &results,
+                                selected,
+                                &theme_rows,
+                                cx,
+                            )
+                        })
+                        .collect()
+                }),
+            )
+            .track_scroll(&self.picker_scroll)
+            .h(px(MENU_ROW * (result_count as f32).min(PICKER_VISIBLE_ROWS)))
+            .into_any_element()
+        };
+        let title = match picker.kind {
+            PickerKind::Workspace => "Move to Workspace",
+            PickerKind::Monitor => "Move to Monitor",
+        };
+        v_flex()
+            .id("picker")
+            .occlude()
+            .absolute()
+            .right_3()
+            .bottom(px(MENU_BOTTOM))
+            .w(px(300.))
+            .p_1()
+            .rounded(px(12.))
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.popover)
+            .shadow_xl()
+            .child(
+                div()
+                    .px_2()
+                    .py_1p5()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(title),
+            )
+            .child(list)
+            .into_any_element()
+    }
+
+    fn render_menu(&self, menu: &Menu, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let confirming_all = self.confirming == Some(Confirm::DeleteAllClips);
         v_flex()
             .id("actions")
@@ -874,6 +1219,7 @@ impl LauncherView {
                     .child(div().flex_1().truncate().child(label))
                     .when(i == 0, |row| row.child(Kbd::new(key("enter"))))
             }))
+            .into_any_element()
     }
 
     fn render_preview(&mut self, clip: &Clip, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -932,6 +1278,7 @@ impl Render for LauncherView {
         let emojis = launcher.emojis.clone();
         let appearance = launcher.config.appearance.clone();
         let indexing = launcher.indexing && apps.is_empty();
+        let action_error = launcher.action_error.clone();
         let theme = cx.theme().clone();
         let viewport = window.viewport_size();
         let clipboard = self.mode == Mode::Clipboard;
@@ -1010,7 +1357,7 @@ impl Render for LauncherView {
             };
             px(ROW_HEIGHT * rows)
         };
-        let body = if !searching && self.mode == Mode::Search {
+        let body = if self.picker.is_some() || (!searching && self.mode == Mode::Search) {
             None
         } else if emoji && !self.results.is_empty() {
             let columns = self.columns;
@@ -1108,15 +1455,30 @@ impl Render for LauncherView {
                 )
             });
         let menu = self
-            .menu
+            .picker
             .as_ref()
-            .map(|menu| self.render_menu(menu, &theme, cx));
+            .map(|picker| self.render_picker(picker, &theme, cx))
+            .or_else(|| {
+                self.menu
+                    .as_ref()
+                    .map(|menu| self.render_menu(menu, &theme, cx))
+            });
         // The menu floats over the panel's lower edge; with few results the
         // panel grows so the menu stays inside it.
         let menu_room = self
-            .menu
+            .picker
             .as_ref()
-            .map(|menu| px(MENU_CHROME + MENU_ROW * menu.actions.len() as f32 + MENU_BOTTOM + 12.));
+            .map(|picker| {
+                px(MENU_CHROME
+                    + MENU_ROW * (picker.results.len() as f32).min(PICKER_VISIBLE_ROWS)
+                    + MENU_BOTTOM
+                    + 12.)
+            })
+            .or_else(|| {
+                self.menu.as_ref().map(|menu| {
+                    px(MENU_CHROME + MENU_ROW * menu.actions.len() as f32 + MENU_BOTTOM + 12.)
+                })
+            });
 
         let panel = v_flex()
             .id("panel")
@@ -1134,13 +1496,23 @@ impl Render for LauncherView {
             .when_some(body, |panel, body| {
                 panel.child(div().border_t_1().border_color(theme.border).child(body))
             })
+            .when_some(action_error, |panel, error| {
+                panel.child(
+                    div()
+                        .px_4()
+                        .py_2()
+                        .text_sm()
+                        .text_color(theme.danger)
+                        .child(error),
+                )
+            })
             // Keeps the footer at the bottom when the menu makes room.
             .when(menu_room.is_some(), |panel| panel.child(div().flex_1()))
             .when_some(footer_verb, |panel, verb| {
                 panel.child(footer(
                     verb,
                     footer_new_instance,
-                    self.menu.is_some(),
+                    self.menu.is_some() || self.picker.is_some(),
                     &theme,
                 ))
             })

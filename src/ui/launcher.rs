@@ -35,26 +35,31 @@ use crate::{icons, launch, niri};
 const FRAME_INSET: Pixels = px(21.);
 
 pub struct Launcher {
-    config: Config,
+    pub(super) config: Config,
     config_stamp: config::Stamp,
-    apps: Rc<Vec<DesktopApp>>,
+    pub(super) apps: Rc<Vec<DesktopApp>>,
     /// Open windows, read from niri each time the launcher opens.
     windows: Vec<niri::Window>,
+    /// Workspaces and outputs, snapshotted when the launcher opens.
+    pub(super) workspaces: Vec<niri::Workspace>,
+    pub(super) outputs: Vec<niri::Output>,
+    /// The workspace focused when the launcher opened.
+    focused_workspace: Option<u64>,
     /// The configured commands, built-in ones included.
-    commands: Rc<Vec<Command>>,
+    pub(super) commands: Rc<Vec<Command>>,
     /// Everything searchable, rebuilt when apps or windows change.
-    entries: Rc<Vec<Entry>>,
+    pub(super) entries: Rc<Vec<Entry>>,
     fingerprint: Vec<config::FileStamp>,
-    indexing: bool,
-    history: History,
-    clipboard: Option<Clipboard>,
+    pub(super) indexing: bool,
+    pub(super) history: History,
+    pub(super) clipboard: Option<Clipboard>,
     /// Clipboard history, newest first, refreshed after each copy.
-    clips: Rc<Vec<Clip>>,
+    pub(super) clips: Rc<Vec<Clip>>,
     /// Every emoji, in the configured skin tone.
-    emojis: Rc<Vec<Emoji>>,
+    pub(super) emojis: Rc<Vec<Emoji>>,
     /// The colour emoji font the picker draws images from; loaded in the
     /// background, and `None` until then or if there is none.
-    emoji_font: Option<std::sync::Arc<EmojiFont>>,
+    pub(super) emoji_font: Option<std::sync::Arc<EmojiFont>>,
     /// Where the next window opens.
     open_on: Start,
     window: Option<AnyWindowHandle>,
@@ -62,6 +67,8 @@ pub struct Launcher {
     view: Option<WeakEntity<view::LauncherView>>,
     opening: bool,
     hide_when_open: bool,
+    /// Last failed niri action, shown in the launcher.
+    pub(super) action_error: Option<String>,
 }
 
 impl Launcher {
@@ -98,6 +105,9 @@ impl Launcher {
             config_stamp: config::stamp(),
             apps: Rc::new(Vec::new()),
             windows: Vec::new(),
+            workspaces: Vec::new(),
+            outputs: Vec::new(),
+            focused_workspace: None,
             commands,
             entries: Rc::new(Vec::new()),
             fingerprint: Vec::new(),
@@ -112,6 +122,7 @@ impl Launcher {
             view: None,
             opening: false,
             hide_when_open: false,
+            action_error: None,
         };
         this.refresh_index(cx);
         this.load_emoji_font(cx);
@@ -147,6 +158,7 @@ impl Launcher {
 
     pub fn show(&mut self, cx: &mut Context<Self>) {
         self.hide_when_open = false;
+        self.action_error = None;
         if self.window.is_some() || self.opening {
             return;
         }
@@ -169,6 +181,13 @@ impl Launcher {
         // Read before the launcher takes keyboard focus, so the focused
         // window is the one window commands act on.
         self.windows = niri::windows();
+        self.workspaces = niri::workspaces();
+        self.outputs = niri::outputs();
+        self.focused_workspace = self
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.is_focused)
+            .map(|workspace| workspace.id);
         self.rebuild_entries();
         match self.config.appearance.theme {
             ThemeChoice::System => Theme::sync_system_appearance(None, cx),
@@ -417,11 +436,48 @@ impl Launcher {
                     self.rebuild_entries();
                     cx.notify();
                 }
-                return report(closed, item, &self.apps);
+                self.finish_window_action(closed, "Close Window", cx);
+                return;
             }
             (Item::Window { window, .. }, Action::CopyTitle) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(window.title.clone()));
                 Ok(())
+            }
+            (Item::Window { window, .. }, Action::ToggleFullscreen) => {
+                niri::perform_window_action(window.id, niri::WindowAction::ToggleFullscreen)
+            }
+            (Item::Window { window, .. }, Action::ToggleWindowedFullscreen) => {
+                niri::perform_window_action(window.id, niri::WindowAction::ToggleWindowedFullscreen)
+            }
+            (Item::Window { window, .. }, Action::ToggleFloating) => {
+                niri::perform_window_action(window.id, niri::WindowAction::ToggleFloating)
+            }
+            (Item::Window { window, .. }, Action::CenterWindow) => {
+                niri::perform_window_action(window.id, niri::WindowAction::Center)
+            }
+            (Item::Window { window, .. }, Action::SetWidthThird) => {
+                niri::perform_window_action(window.id, niri::WindowAction::SetWidth(1.0 / 3.0))
+            }
+            (Item::Window { window, .. }, Action::SetWidthHalf) => {
+                niri::perform_window_action(window.id, niri::WindowAction::SetWidth(0.5))
+            }
+            (Item::Window { window, .. }, Action::SetWidthTwoThirds) => {
+                niri::perform_window_action(window.id, niri::WindowAction::SetWidth(2.0 / 3.0))
+            }
+            (Item::Window { window, .. }, Action::SetWidthFull) => {
+                niri::perform_window_action(window.id, niri::WindowAction::SetWidth(1.0))
+            }
+            (Item::Window { window, .. }, Action::BringToThisWorkspace) => {
+                self.focused_workspace.map_or_else(
+                    || Err(std::io::Error::other("no focused workspace was recorded")),
+                    |workspace| niri::move_window_to_workspace(window.id, workspace),
+                )
+            }
+            (Item::Window { .. }, Action::MoveToWorkspace | Action::MoveToMonitor) => Err(
+                std::io::Error::other("choose a workspace or monitor from its picker"),
+            ),
+            (Item::Window { window, .. }, Action::ScreenshotWindow) => {
+                niri::perform_window_action(window.id, niri::WindowAction::Screenshot)
             }
             (Item::System(cmd), Action::Primary) => cmd.run(&self.config),
             (
@@ -459,8 +515,36 @@ impl Launcher {
         {
             self.history.record(&key, history::now());
         }
+        if matches!(item, Item::Window { .. }) {
+            self.finish_window_action(result, "Window action", cx);
+            return;
+        }
         report(result, item, &self.apps);
         self.hide(cx);
+    }
+
+    /// Finish a window action, leaving the launcher open with an error on
+    /// failure and hiding it after success.
+    pub(super) fn finish_window_action(
+        &mut self,
+        result: std::io::Result<()>,
+        label: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        match result {
+            Ok(()) => {
+                self.action_error = None;
+                self.hide(cx);
+                true
+            }
+            Err(err) => {
+                let message = format!("{label}: {err}");
+                eprintln!("rockhopper: {message}");
+                self.action_error = Some(message);
+                cx.notify();
+                false
+            }
+        }
     }
 
     /// Close, then run `command` on `window`: commands that act on the
