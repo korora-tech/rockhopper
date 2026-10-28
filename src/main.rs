@@ -8,6 +8,7 @@ mod icons;
 mod ipc;
 mod items;
 mod launch;
+mod mcp;
 mod niri;
 mod search;
 mod system;

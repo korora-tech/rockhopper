@@ -101,6 +101,27 @@ Each runs with `--id {window_id}`. The launcher closes before a command runs, so
 
 Ranking is fuzzy, using the [nucleo](https://github.com/helix-editor/nucleo) matcher. Names that start with what you typed rank higher. Apps you open often or recently get a boost that fades over weeks. The history lives in `$XDG_STATE_HOME/rockhopper/history.json`.
 
+## MCP tools
+
+Rockhopper can list the tools of [MCP](https://modelcontextprotocol.io) servers next to your other commands. Add servers that speak MCP over stdio under `mcp`:
+
+```yaml
+mcp:
+  notes:
+    command: [notes-mcp, --stdio]
+    env:
+      NOTES_DIR: /home/me/notes
+  other:
+    enabled: false
+```
+
+Each time the config changes, and at startup, Rockhopper starts every server briefly and lists its tools (they show as **MCP** results, and under the commands prefix). `enter` runs the tool. A server is only started for a moment, and stopped again, so nothing runs while the launcher is closed.
+
+- Only tools that need no arguments are listed. Tools with required arguments are skipped for now.
+- If the result carries an [MCP-UI](https://mcpui.dev) page (a `ui://` resource with `text/html`, either in the result or named by the tool's `_meta.ui.resourceUri`), Rockhopper saves it to `$XDG_RUNTIME_DIR` and opens it with `xdg-open`. Otherwise the result's text is copied to the clipboard.
+- Errors are reported on stderr.
+- Remote servers (streamable HTTP) are not supported yet.
+
 ## Apps
 
 Rockhopper reads the desktop entries in `$XDG_DATA_HOME/applications` and every `$XDG_DATA_DIRS/*/applications`, following the [Desktop Entry Specification](https://specifications.freedesktop.org/desktop-entry-spec/latest/). Entries that are hidden, marked `NoDisplay`, limited to other desktops by `OnlyShowIn`/`NotShowIn`, or whose `TryExec` is missing are skipped. Names, comments and keywords use your locale.
@@ -159,6 +180,9 @@ prefixes:            # null turns one off
   apps: null
   windows: "w "
   clipboard: null
+mcp:                 # MCP servers, started on stdio
+  notes:
+    command: [notes-mcp, --stdio]
 commands:            # merged with the built-in ones by key
   niri-fullscreen:
     keywords: [big]  # override one field of a built-in command

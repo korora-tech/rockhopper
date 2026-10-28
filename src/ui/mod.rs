@@ -24,6 +24,7 @@ use crate::emoji::{self, Emoji, EmojiFont};
 use crate::history::{self, History};
 use crate::ipc::{Request, TestInput};
 use crate::items::{self, Action, Entry, Item};
+use crate::mcp::{self, Tool};
 use crate::{icons, launch, niri};
 
 pub use assets::Assets;
@@ -42,6 +43,8 @@ pub struct Launcher {
     windows: Vec<niri::Window>,
     /// The configured commands, built-in ones included.
     commands: Rc<Vec<Command>>,
+    /// Tools of the configured MCP servers, found in the background.
+    mcp_tools: Rc<Vec<Tool>>,
     /// Everything searchable, rebuilt when apps or windows change.
     entries: Rc<Vec<Entry>>,
     fingerprint: Vec<(std::path::PathBuf, Option<SystemTime>)>,
@@ -97,6 +100,7 @@ impl Launcher {
             apps: Rc::new(Vec::new()),
             windows: Vec::new(),
             commands,
+            mcp_tools: Rc::new(Vec::new()),
             entries: Rc::new(Vec::new()),
             fingerprint: Vec::new(),
             indexing: false,
@@ -112,6 +116,7 @@ impl Launcher {
             hide_when_open: false,
         };
         this.refresh_index(cx);
+        this.refresh_mcp(cx);
         this.load_emoji_font(cx);
         this
     }
@@ -158,7 +163,11 @@ impl Launcher {
             let config = config::load();
             let emoji_changed = config.emoji != self.config.emoji;
             self.commands = Rc::new(commands::resolve(&config.commands));
+            let mcp_changed = config.mcp != self.config.mcp;
             self.config = config;
+            if mcp_changed {
+                self.refresh_mcp(cx);
+            }
             if emoji_changed {
                 self.load_emoji_font(cx);
             }
@@ -278,6 +287,7 @@ impl Launcher {
             &self.apps,
             &self.windows,
             &self.commands,
+            &self.mcp_tools,
             self.clipboard.is_some(),
         ));
     }
@@ -404,6 +414,11 @@ impl Launcher {
                 Ok(())
             }
             (Item::System(cmd), Action::Primary) => cmd.run(&self.config),
+            (Item::Mcp(tool), Action::Primary) => {
+                self.history.record(&tool.history_key(), history::now());
+                self.call_mcp(tool, cx);
+                Ok(())
+            }
             (
                 Item::Command {
                     command, window, ..
@@ -462,6 +477,62 @@ impl Launcher {
                 eprintln!("rockhopper: {name}: {err}");
             }
         });
+    }
+
+    /// Ask the MCP servers for their tools in the background.
+    fn refresh_mcp(&mut self, cx: &mut Context<Self>) {
+        let servers = self.config.mcp.clone();
+        if servers.is_empty() {
+            self.mcp_tools = Rc::new(Vec::new());
+            self.rebuild_entries();
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let tools = cx
+                .background_spawn(async move { mcp::discover(&servers) })
+                .await;
+            _ = this.update(cx, |this, cx| {
+                this.mcp_tools = Rc::new(tools);
+                this.rebuild_entries();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Run `tool` in the background. A result with an MCP-UI page opens in
+    /// the browser; any other text result is copied to the clipboard.
+    fn call_mcp(&mut self, tool: &Tool, cx: &mut Context<Self>) {
+        let Some(server) = self.config.mcp.get(&tool.server).cloned() else {
+            return;
+        };
+        let tool = tool.clone();
+        cx.spawn(async move |this, cx| {
+            let called = tool.clone();
+            let outcome = cx
+                .background_spawn(async move { mcp::call(&server, &called) })
+                .await;
+            let name = tool.title;
+            _ = this.update(cx, |_, cx| match outcome {
+                Err(err) => eprintln!("rockhopper: {name}: {err}"),
+                Ok(outcome) if outcome.is_error => {
+                    eprintln!("rockhopper: {name}: {}", outcome.text)
+                }
+                Ok(outcome) => {
+                    if let Some(html) = &outcome.html {
+                        let opened = mcp::write_page(html).and_then(|path| {
+                            crate::system::spawn(&["xdg-open".into(), path.display().to_string()])
+                        });
+                        if let Err(err) = opened {
+                            eprintln!("rockhopper: {name}: {err}");
+                        }
+                    } else if !outcome.text.is_empty() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(outcome.text));
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     /// Rescan desktop entries in the background when their directories

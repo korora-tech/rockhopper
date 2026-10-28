@@ -25,6 +25,8 @@ pub struct Config {
     pub prefixes: Prefixes,
     /// Commands by key, laid over the built-in ones.
     pub commands: BTreeMap<String, CommandConfig>,
+    /// MCP servers by key, whose tools are listed in the launcher.
+    pub mcp: BTreeMap<String, crate::mcp::ServerConfig>,
 }
 
 /// What a prefix narrows the search to.
@@ -181,6 +183,7 @@ impl Default for Config {
             emoji: EmojiConfig::default(),
             prefixes: Prefixes::default(),
             commands: BTreeMap::new(),
+            mcp: BTreeMap::new(),
         }
     }
 }
@@ -305,6 +308,14 @@ mod tests {
             c.commands["term"].run.as_deref(),
             Some(&["ghostty".to_string()][..])
         );
+    }
+
+    #[test]
+    fn mcp_servers() {
+        let c = parse("mcp:\n  files:\n    command: [mcp-files, --stdio]\n    env:\n      ROOT: /tmp\n  off:\n    enabled: false\n").unwrap();
+        assert_eq!(c.mcp["files"].command, ["mcp-files", "--stdio"]);
+        assert_eq!(c.mcp["files"].env["ROOT"], "/tmp");
+        assert_eq!(c.mcp["off"].enabled, Some(false));
     }
 
     #[test]
