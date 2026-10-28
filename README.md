@@ -62,6 +62,9 @@ Starting Rockhopper from the compositor gives it your session's `PATH` and `XDG_
 | Log Out, Restart, Shut Down | Press `enter` twice: the first press asks for confirmation | |
 | Clipboard History | Open the clipboard history | |
 | Search Emoji | Open the emoji picker | |
+| Niri window commands | Run it | |
+
+On niri, root search also lists **Toggle Fullscreen**, **Float Window** or **Tile Window**, **Center Window**, **Maximize Column**, column widths of 1/3, 1/2 or 2/3, **Center Column**, **Toggle Tabbed Column**, **Move Window to Next Monitor**, **Move Window to Workspace Up/Down**, and **Open Overview**. These commands are hidden on Sway and Hyprland. When no window was focused at launch, only **Open Overview** from this set is listed. Focus-dependent commands run only after the overlay closes and Rockhopper confirms focus returned to the same window; if it did not, Rockhopper does not send the action and reopens with an error.
 
 Window management actions are available for niri windows only and target the selected window by id, without focusing it first. **Move to Workspace…** searches workspaces by index, name and output; **Move to Monitor…** searches connected outputs. `esc` returns from either picker to the actions menu. Failed niri requests stay visible as an error in the launcher.
 
