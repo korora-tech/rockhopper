@@ -8,10 +8,12 @@ mod icons;
 mod ipc;
 mod items;
 mod launch;
+mod mcp;
 mod niri;
 mod search;
 mod system;
 mod ui;
+mod viewer;
 
 use gpui_kit::{AppContext as _, QuitMode};
 
@@ -35,6 +37,14 @@ fn main() {
         [] => "toggle".to_owned(),
         [one] => one.clone(),
         // Hidden, for automated tests: see ipc::TestInput.
+        // Hidden: the window for an MCP App, started by the launcher.
+        [view, spec] if view == "view" => {
+            if let Err(err) = viewer::run(spec) {
+                eprintln!("rockhopper: view: {err}");
+                std::process::exit(1);
+            }
+            return;
+        }
         [test, input] if test == "test-type" || test == "test-key" => format!("{test} {input}"),
         _ => usage_error(),
     };

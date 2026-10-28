@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use crate::apps::App;
 use crate::commands::Command;
 use crate::history::History;
+use crate::mcp::Tool;
 use crate::niri::Window;
 use crate::search::Candidate;
 use crate::system::SystemCommand;
@@ -26,6 +27,8 @@ pub enum Item {
         window: Option<Window>,
         app: Option<usize>,
     },
+    /// A tool of a configured MCP server.
+    Mcp(Tool),
     /// Opens the clipboard history.
     Clipboard,
     /// Opens the emoji picker.
@@ -75,6 +78,7 @@ pub fn entries(
     apps: &[App],
     windows: &[Window],
     commands: &[Command],
+    mcp: &[Tool],
     clipboard: bool,
 ) -> Vec<Entry> {
     let app_of = |window: &Window| {
@@ -145,6 +149,19 @@ pub fn entries(
                 app: focused.filter(|_| command.needs_window()).and_then(app_of),
             },
         });
+    let mcp_entries = mcp.iter().map(|tool| Entry {
+        item: Item::Mcp(tool.clone()),
+        candidate: Candidate {
+            name: tool.title.clone(),
+            secondary: tool
+                .description
+                .iter()
+                .cloned()
+                .chain([tool.server.clone(), tool.name.clone()])
+                .collect(),
+            key: Some(tool.history_key()),
+        },
+    });
     let clipboard_entry = clipboard.then(|| Entry {
         item: Item::Clipboard,
         candidate: Candidate {
@@ -165,6 +182,7 @@ pub fn entries(
         .chain(window_entries)
         .chain(system_entries)
         .chain(command_entries)
+        .chain(mcp_entries)
         .chain(clipboard_entry)
         .chain([emoji_entry])
         .collect()
@@ -175,7 +193,11 @@ impl Item {
         match self {
             Self::App(_) => Kind::App,
             Self::Window { .. } => Kind::Window,
-            Self::System(_) | Self::Command { .. } | Self::Clipboard | Self::Emoji => Kind::Command,
+            Self::System(_)
+            | Self::Command { .. }
+            | Self::Mcp(_)
+            | Self::Clipboard
+            | Self::Emoji => Kind::Command,
         }
     }
 
@@ -185,6 +207,7 @@ impl Item {
             Self::Window { window, .. } => window.title.clone(),
             Self::System(cmd) => cmd.name().into(),
             Self::Command { command, .. } => command.name.clone(),
+            Self::Mcp(tool) => tool.title.clone(),
             Self::Clipboard => "Clipboard History".into(),
             Self::Emoji => "Search Emoji".into(),
         }
@@ -215,6 +238,10 @@ impl Item {
                 None => window.title.clone(),
             }),
             Self::Command { .. } => None,
+            Self::Mcp(tool) => Some(match &tool.description {
+                Some(d) => format!("{} · {d}", tool.server),
+                None => tool.server.clone(),
+            }),
             Self::Clipboard => Some("Search what you copied".into()),
             Self::Emoji => Some("Find an emoji and copy it".into()),
         }
@@ -226,6 +253,7 @@ impl Item {
             Self::App(i) if apps[*i].terminal => "Terminal",
             Self::App(_) => "Application",
             Self::Window { .. } => "Window",
+            Self::Mcp(_) => "MCP",
             Self::System(_) | Self::Command { .. } | Self::Clipboard | Self::Emoji => "Command",
         }
     }
@@ -250,7 +278,7 @@ impl Item {
             Self::Command {
                 window: Some(_), ..
             } => ItemIcon::Symbol(Symbol::Window),
-            Self::Command { .. } => ItemIcon::Symbol(Symbol::Command),
+            Self::Command { .. } | Self::Mcp(_) => ItemIcon::Symbol(Symbol::Command),
             Self::Clipboard => ItemIcon::Symbol(Symbol::Clipboard),
             Self::Emoji => ItemIcon::Symbol(Symbol::Emoji),
         }
@@ -261,7 +289,7 @@ impl Item {
         match self {
             Self::App(_) => "Open",
             Self::Window { .. } => "Switch to",
-            Self::System(_) | Self::Command { .. } => "Run",
+            Self::System(_) | Self::Command { .. } | Self::Mcp(_) => "Run",
             Self::Clipboard | Self::Emoji => "Open",
         }
     }
@@ -272,6 +300,7 @@ impl Item {
             Self::Window { .. } => None,
             Self::System(cmd) => Some(cmd.key().into()),
             Self::Command { command, .. } => Some(command.history_key()),
+            Self::Mcp(tool) => Some(tool.history_key()),
             Self::Clipboard => Some("rockhopper:clipboard".into()),
             Self::Emoji => Some("rockhopper:emoji".into()),
         }
@@ -308,7 +337,11 @@ impl Item {
                     }
                 }
             }
-            Self::System(_) | Self::Command { .. } | Self::Clipboard | Self::Emoji => {}
+            Self::System(_)
+            | Self::Command { .. }
+            | Self::Mcp(_)
+            | Self::Clipboard
+            | Self::Emoji => {}
         }
         if self
             .history_key(apps)
@@ -393,6 +426,7 @@ mod tests {
             &apps,
             &[window("com.mitchellh.ghostty"), window("unknown")],
             &[],
+            &[],
             false,
         );
         let windows: Vec<_> = entries
@@ -419,7 +453,7 @@ mod tests {
         let apps = vec![app("com.mitchellh.ghostty.desktop", "Ghostty")];
         let commands = crate::commands::resolve(&Default::default());
         let count = |windows: &[Window]| {
-            entries(&apps, windows, &commands, false)
+            entries(&apps, windows, &commands, &[], false)
                 .iter()
                 .filter(|e| matches!(e.item, Item::Command { .. }))
                 .count()
@@ -430,7 +464,7 @@ mod tests {
             ..window("com.mitchellh.ghostty")
         };
         assert_eq!(count(std::slice::from_ref(&focused)), commands.len());
-        let entries = entries(&apps, &[focused], &commands, false);
+        let entries = entries(&apps, &[focused], &commands, &[], false);
         let fullscreen = entries
             .iter()
             .find(|e| e.candidate.name == "Toggle Fullscreen")

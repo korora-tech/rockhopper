@@ -33,6 +33,10 @@ sha2 = "0.10"
 getrandom = "0.3"
 keyring-core = "1"
 zbus-secret-service-keyring-store = { version = "1", features = ["rt-async-io-crypto-rust"] }
+wry = "0.57.1"
+tao = "0.37.2"
+gtk-layer-shell = { version = "0.8.2", features = ["v0_6"] }
+gtk = "0.18"
 
 [profile.release]
 lto = "thin"

@@ -1,0 +1,83 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; height: 100%; background: #111; }
+  iframe { border: 0; width: 100%; height: 100%; display: block; }
+</style>
+<iframe id="app" sandbox="allow-scripts allow-forms allow-popups"></iframe>
+<script>
+(() => {
+  const spec = window.__spec;
+  const frame = document.getElementById("app");
+  const send = (message) => frame.contentWindow.postMessage({ jsonrpc: "2.0", ...message }, "*");
+  const notify = (method, params) => send({ method, params });
+  const ipc = (message) => window.ipc.postMessage(JSON.stringify(message));
+  const error = (id, message) => send({ id, error: { code: -32601, message } });
+
+  // The server's answer to an app's tools/call or resources/read.
+  window.__reply = (id, result, err) =>
+    err ? send({ id, error: { code: -32000, message: err } }) : send({ id, result });
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== frame.contentWindow) return;
+    const m = event.data;
+    if (!m || m.jsonrpc !== "2.0") return;
+    switch (m.method) {
+      case "ui/initialize":
+        send({ id: m.id, result: {
+          protocolVersion: "2026-01-26",
+          hostInfo: { name: "rockhopper", version: spec.version },
+          hostCapabilities: { openLinks: {}, serverTools: {}, serverResources: {}, logging: {} },
+          hostContext: {
+            toolInfo: { tool: { name: spec.tool, inputSchema: { type: "object" } } },
+            theme: spec.dark ? "dark" : "light",
+            displayMode: "inline",
+            availableDisplayModes: ["inline"],
+            platform: "desktop",
+            locale: navigator.language,
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            userAgent: "rockhopper/" + spec.version,
+            containerDimensions: { width: spec.width, maxHeight: 800 },
+          },
+        } });
+        break;
+      case "ui/notifications/initialized":
+        // Input first: the spec requires it before the result.
+        notify("ui/notifications/tool-input", { arguments: {} });
+        notify("ui/notifications/tool-result", spec.result);
+        break;
+      case "ping":
+        send({ id: m.id, result: {} });
+        break;
+      case "ui/open-link":
+        ipc({ kind: "open", url: m.params && m.params.url });
+        send({ id: m.id, result: {} });
+        break;
+      case "ui/notifications/size-changed":
+        // Fixed width, flexible height: the window follows the app's height.
+        if (m.params) ipc({ kind: "resize", height: m.params.height });
+        break;
+      case "ui/request-display-mode":
+        send({ id: m.id, result: { mode: "inline" } });
+        break;
+      case "ui/message":
+      case "ui/update-model-context":
+        // There is no model to tell; accept and ignore.
+        send({ id: m.id, result: {} });
+        break;
+      case "tools/call":
+      case "resources/read":
+        ipc({ kind: "proxy", id: m.id, method: m.method, params: m.params });
+        break;
+      case "notifications/message":
+        ipc({ kind: "log", data: m.params });
+        break;
+      default:
+        // Notifications such as size-changed need no answer.
+        if (m.id !== undefined) error(m.id, "not supported: " + m.method);
+    }
+  });
+
+  frame.srcdoc = spec.html;
+})();
+</script>

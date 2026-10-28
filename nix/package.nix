@@ -5,6 +5,7 @@
   rustPlatform,
   makeWrapper,
   pkg-config,
+  wrapGAppsHook3,
   fontconfig,
   freetype,
   libxcb,
@@ -12,6 +13,11 @@
   vulkan-loader,
   vulkan-headers,
   wayland,
+  webkitgtk_4_1,
+  gtk3,
+  gtk-layer-shell,
+  libsoup_3,
+  glib-networking,
 }:
 let
   cargo = lib.importTOML ../Cargo.toml;
@@ -34,6 +40,7 @@ rustPlatform.buildRustPackage {
   nativeBuildInputs = [
     makeWrapper
     pkg-config
+    wrapGAppsHook3
   ];
   buildInputs = [
     fontconfig
@@ -43,6 +50,12 @@ rustPlatform.buildRustPackage {
     vulkan-loader
     vulkan-headers
     wayland
+    # The window for MCP Apps.
+    webkitgtk_4_1
+    gtk3
+    gtk-layer-shell
+    libsoup_3
+    glib-networking
   ];
 
   # GPUI dlopens Vulkan, Wayland and xkbcommon at runtime.
