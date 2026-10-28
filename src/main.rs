@@ -1,3 +1,5 @@
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 mod apps;
 mod clipboard;
 mod commands;
@@ -10,6 +12,7 @@ mod items;
 mod launch;
 mod niri;
 mod search;
+mod syscalls;
 mod system;
 mod ui;
 

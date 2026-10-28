@@ -67,12 +67,10 @@ pub fn launch_argv(app: &App, argv: &[String], config: &Config) -> std::io::Resu
             }
         }
     }
-    // SAFETY: setsid is async-signal-safe and touches no Rust state.
+    // SAFETY: `pre_exec` requires async-signal-safe work after fork. The callback
+    // only invokes the setsid syscall and touches no Rust-managed state.
     unsafe {
-        cmd.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
+        cmd.pre_exec(crate::syscalls::setsid);
     }
     let mut child = cmd.spawn()?;
     // Reap it so it never lingers as a zombie of the daemon.
