@@ -15,6 +15,7 @@ pub struct Config {
     pub appearance: Appearance,
     /// Prefix for `Terminal=true` apps; the app's command is appended.
     pub terminal: Vec<String>,
+    pub launcher: LauncherConfig,
     pub launch: Launch,
     /// Icon theme name; defaults to the GTK setting.
     pub icon_theme: Option<String>,
@@ -110,6 +111,21 @@ pub struct EmojiConfig {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
+pub struct LauncherConfig {
+    /// On niri, focus the most recently focused open app window on Enter.
+    pub focus_existing: bool,
+}
+
+impl Default for LauncherConfig {
+    fn default() -> Self {
+        Self {
+            focus_existing: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
 pub struct ClipboardConfig {
     /// Watch the clipboard. Read at startup only.
     pub enabled: bool,
@@ -174,6 +190,7 @@ impl Default for Config {
         Self {
             appearance: Appearance::default(),
             terminal: vec!["xdg-terminal-exec".into()],
+            launcher: LauncherConfig::default(),
             launch: Launch::default(),
             icon_theme: None,
             system: System::default(),
@@ -278,6 +295,13 @@ mod tests {
         assert_eq!(c.appearance.top, 0.2);
         assert_eq!(c.terminal, ["ghostty", "-e"]);
         assert!(c.launch.systemd_scope);
+    }
+
+    #[test]
+    fn focus_existing_defaults_to_true_and_can_be_disabled() {
+        assert!(parse("").unwrap().launcher.focus_existing);
+        let config = parse("launcher:\n  focus_existing: false\n").unwrap();
+        assert!(!config.launcher.focus_existing);
     }
 
     /// The header `pkgs.formats.yaml` writes.

@@ -61,6 +61,45 @@ pub struct Entry {
     pub candidate: Candidate,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppLaunchPolicy {
+    PreferExisting,
+    AlwaysLaunch,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppLaunchIntent {
+    Default,
+    NewInstance,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppOpen {
+    FocusWindow(u64),
+    Launch,
+}
+
+/// Choose how to activate an app. `windows` is niri's most-recently-focused-first list.
+pub fn choose_app_open(
+    app: &App,
+    windows: &[Window],
+    policy: AppLaunchPolicy,
+    intent: AppLaunchIntent,
+) -> AppOpen {
+    if policy == AppLaunchPolicy::AlwaysLaunch || intent == AppLaunchIntent::NewInstance {
+        return AppOpen::Launch;
+    }
+    windows
+        .iter()
+        .find(|window| {
+            window
+                .app_id
+                .as_deref()
+                .is_some_and(|id| app.owns_window(id))
+        })
+        .map_or(AppOpen::Launch, |window| AppOpen::FocusWindow(window.id))
+}
+
 /// What a search scope lists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -376,14 +415,65 @@ mod tests {
         }
     }
 
-    fn window(app_id: &str) -> Window {
+    fn window_with_id(app_id: &str, id: u64) -> Window {
         Window {
-            id: 7,
+            id,
             title: "README.md".into(),
             app_id: Some(app_id.into()),
             workspace: Some("2".into()),
             is_focused: false,
         }
+    }
+
+    fn window(app_id: &str) -> Window {
+        window_with_id(app_id, 7)
+    }
+
+    #[test]
+    fn app_activation_chooses_existing_or_launches_when_requested() {
+        let app = app("com.mitchellh.ghostty.desktop", "Ghostty");
+        // niri supplies windows most-recently-focused first.
+        let windows = vec![
+            window_with_id("other", 10),
+            window_with_id("com.mitchellh.ghostty", 9),
+            window_with_id("com.mitchellh.ghostty", 8),
+        ];
+        assert_eq!(
+            choose_app_open(
+                &app,
+                &windows,
+                AppLaunchPolicy::PreferExisting,
+                AppLaunchIntent::Default
+            ),
+            AppOpen::FocusWindow(9)
+        );
+        assert_eq!(
+            choose_app_open(
+                &app,
+                &windows,
+                AppLaunchPolicy::AlwaysLaunch,
+                AppLaunchIntent::Default
+            ),
+            AppOpen::Launch
+        );
+        assert_eq!(
+            choose_app_open(
+                &app,
+                &windows,
+                AppLaunchPolicy::PreferExisting,
+                AppLaunchIntent::NewInstance
+            ),
+            AppOpen::Launch
+        );
+        assert_eq!(
+            choose_app_open(
+                &app,
+                &windows[..1],
+                AppLaunchPolicy::PreferExisting,
+                AppLaunchIntent::Default
+            ),
+            AppOpen::Launch
+        );
     }
 
     #[test]

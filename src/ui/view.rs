@@ -74,6 +74,7 @@ actions!(
         SelectLeft,
         SelectRight,
         Open,
+        OpenNew,
         Dismiss,
         ToggleActions
     ]
@@ -91,6 +92,7 @@ pub fn bind_keys(cx: &mut gpui_kit::App) {
         KeyBinding::new("tab", SelectNext, input),
         KeyBinding::new("shift-tab", SelectPrevious, input),
         KeyBinding::new("enter", Open, input),
+        KeyBinding::new("shift-enter", OpenNew, input),
         KeyBinding::new("escape", Dismiss, input),
         KeyBinding::new("ctrl-k", ToggleActions, input),
         // Only in the emoji grid; elsewhere they move the text cursor.
@@ -110,6 +112,7 @@ pub fn test_action(key: &str) -> Option<Box<dyn gpui_kit::Action>> {
         "tab" => Box::new(SelectNext),
         "shift-tab" => Box::new(SelectPrevious),
         "enter" => Box::new(Open),
+        "shift-enter" => Box::new(OpenNew),
         "escape" => Box::new(Dismiss),
         "ctrl-k" => Box::new(ToggleActions),
         _ => return None,
@@ -474,6 +477,34 @@ impl LauncherView {
                 Mode::Emoji => MenuAction::CopyEmoji,
             };
             self.run(target, action, window, cx);
+        }
+    }
+
+    fn open_new(&mut self, _: &OpenNew, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode != Mode::Search {
+            return self.open(&Open, window, cx);
+        }
+        let target = self
+            .menu
+            .as_ref()
+            .map(|menu| menu.target)
+            .or_else(|| self.results.get(self.selected).copied());
+        let Some(target) = target else {
+            return;
+        };
+        let item = self.launcher.read(cx).entries[target].item.clone();
+        if matches!(item, Item::App(_) | Item::Window { app: Some(_), .. }) {
+            self.run(
+                target,
+                MenuAction::Item(ActionDef {
+                    action: Action::NewInstance,
+                    label: String::new(),
+                }),
+                window,
+                cx,
+            );
+        } else {
+            self.open(&Open, window, cx);
         }
     }
 
@@ -1069,6 +1100,13 @@ impl Render for LauncherView {
                 .map(|&e| entries[e].item.verb()),
             Mode::Clipboard | Mode::Emoji => self.results.get(self.selected).map(|_| "Copy"),
         };
+        let footer_new_instance = self.mode == Mode::Search
+            && self.results.get(self.selected).is_some_and(|&e| {
+                matches!(
+                    &entries[e].item,
+                    Item::App(_) | Item::Window { app: Some(_), .. }
+                )
+            });
         let menu = self
             .menu
             .as_ref()
@@ -1099,7 +1137,12 @@ impl Render for LauncherView {
             // Keeps the footer at the bottom when the menu makes room.
             .when(menu_room.is_some(), |panel| panel.child(div().flex_1()))
             .when_some(footer_verb, |panel, verb| {
-                panel.child(footer(verb, self.menu.is_some(), &theme))
+                panel.child(footer(
+                    verb,
+                    footer_new_instance,
+                    self.menu.is_some(),
+                    &theme,
+                ))
             })
             .children(menu)
             .with_animation(
@@ -1124,6 +1167,7 @@ impl Render for LauncherView {
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
             .on_action(cx.listener(Self::open))
+            .on_action(cx.listener(Self::open_new))
             .on_action(cx.listener(Self::dismiss))
             .on_action(cx.listener(Self::toggle_actions))
             // Backspace in an empty search box leaves a mode, as if deleting
@@ -1397,7 +1441,7 @@ fn item_icon(icon: ItemIcon, theme: &Theme) -> AnyElement {
     }
 }
 
-fn footer(verb: &str, menu_open: bool, theme: &Theme) -> AnyElement {
+fn footer(verb: &str, new_instance: bool, menu_open: bool, theme: &Theme) -> AnyElement {
     let hint = |keys: &str, label: &str| {
         h_flex()
             .gap_1p5()
@@ -1418,15 +1462,25 @@ fn footer(verb: &str, menu_open: bool, theme: &Theme) -> AnyElement {
         .child(div().font_weight(FontWeight::SEMIBOLD).child("Rockhopper"))
         .child(div().flex_1())
         .when(!menu_open, |footer| footer.child(hint("enter", verb)))
+        .when(!menu_open && new_instance, |footer| {
+            footer.child(hint("shift-enter", "New instance"))
+        })
         .child(hint("ctrl-k", "Actions"))
         .into_any_element()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // Not `super::*`: that brings in GPUI's `test` macro, shadowing Rust's.
+    use super::{frequent_first, key, test_action, title_case};
     use crate::emoji::{self, SkinTone};
     use crate::history::{self, History};
+
+    #[test]
+    fn shift_enter_is_available_to_test_drivers() {
+        assert!(test_action("shift-enter").is_some());
+        let _ = key("shift-enter");
+    }
 
     #[test]
     fn frequent_emoji_lead_without_repeats() {
