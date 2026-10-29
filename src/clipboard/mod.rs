@@ -7,6 +7,6 @@ mod policy;
 mod store;
 mod watch;
 
-pub(crate) use policy::ImageCapture;
 pub use manager::Clipboard;
+pub(crate) use policy::ImageCapture;
 pub use store::{Clip, Content};

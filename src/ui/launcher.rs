@@ -365,11 +365,11 @@ impl Launcher {
         }
     }
 
-    fn clip_image(&self, id: u64) -> Option<std::sync::Arc<Vec<u8>>> {
+    pub(super) fn clip_image(&self, id: u64) -> Option<std::sync::Arc<Vec<u8>>> {
         self.clipboard.as_ref()?.image(id)
     }
 
-    fn copy_clip(&mut self, clip: &Clip, cx: &mut Context<Self>) {
+    pub(super) fn copy_clip(&mut self, clip: &Clip, cx: &mut Context<Self>) {
         if let Some(clipboard) = &self.clipboard
             && let Err(err) = clipboard.copy(clip)
         {
@@ -381,7 +381,12 @@ impl Launcher {
 
     /// Copy `text`, through the clipboard watcher when there is one so it
     /// outlives this window, and close.
-    fn copy_text(&mut self, text: &str, history_key: Option<String>, cx: &mut Context<Self>) {
+    pub(super) fn copy_text(
+        &mut self,
+        text: &str,
+        history_key: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let copied = match &self.clipboard {
             Some(clipboard) => clipboard.copy_text(text),
             None => Err(std::io::Error::other("no clipboard watcher")),
@@ -430,14 +435,14 @@ impl Launcher {
         .detach();
     }
 
-    fn delete_clip(&mut self, id: u64, cx: &mut Context<Self>) {
+    pub(super) fn delete_clip(&mut self, id: u64, cx: &mut Context<Self>) {
         if let Some(clipboard) = &self.clipboard {
             clipboard.delete(id);
         }
         self.refresh_clips(cx);
     }
 
-    fn clear_clips(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn clear_clips(&mut self, cx: &mut Context<Self>) {
         if let Some(clipboard) = &self.clipboard {
             clipboard.clear();
         }
@@ -537,7 +542,7 @@ impl Launcher {
 
     /// Carry out `action` on `item`. Most actions close the launcher; those
     /// that change the list in place leave it open.
-    fn perform(&mut self, item: &Item, action: Action, cx: &mut Context<Self>) {
+    pub(super) fn perform(&mut self, item: &Item, action: Action, cx: &mut Context<Self>) {
         if let (
             Item::NiriCommand {
                 command,

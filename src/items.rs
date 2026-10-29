@@ -711,7 +711,8 @@ mod tests {
                 .all(|entry| !matches!(entry.item, Item::NiriCommand { .. }))
         );
 
-        let no_focused_window = entries(&[], &[], &[], false, true, None);
+        let configured = crate::commands::resolve(&Default::default());
+        let no_focused_window = entries(&[], &[], &configured, false, true, None);
         let names: Vec<_> = no_focused_window
             .iter()
             .filter_map(|entry| match &entry.item {
@@ -725,7 +726,7 @@ mod tests {
             id: 41,
             is_floating: true,
         });
-        let with_focus = entries(&[], &[], &[], false, true, focused);
+        let with_focus = entries(&[], &[], &configured, false, true, focused);
         let commands: Vec<_> = with_focus
             .iter()
             .filter(|entry| matches!(entry.item, Item::NiriCommand { .. }))

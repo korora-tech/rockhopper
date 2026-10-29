@@ -13,9 +13,9 @@ use gpui_kit::component::{ActiveTheme as _, Icon, IconName, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, App, AppContext as _, Context, Div, Entity,
-    FontWeight, Image, ImageFormat, InteractiveElement as _, IntoElement, KeyBinding, KeyUpEvent,
-    Keystroke, MouseButton, ObjectFit, ParentElement as _, Render, ScrollStrategy, Stateful,
-    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription,
+    FontWeight, Image, ImageFormat, InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent,
+    KeyUpEvent, Keystroke, MouseButton, ObjectFit, ParentElement as _, Render, ScrollStrategy,
+    Stateful, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription,
     UniformListScrollHandle, Window, actions, div, ease_out_quint, hsla, img, px, relative,
     uniform_list, white,
 };
