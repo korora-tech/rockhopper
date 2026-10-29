@@ -1,0 +1,847 @@
+---
+import { FREQUENT, KIND_LABEL } from "../lib/demo";
+---
+
+<figure class="desktop" aria-label="Interactive demo of the Rockhopper launcher">
+  <div class="wallpaper" aria-hidden="true"></div>
+  <div class="dim" aria-hidden="true"></div>
+
+  <div class="panel" data-launcher>
+    <div class="search">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+        <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"></circle>
+        <path d="m20 20-4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+      </svg>
+      <span class="mode" data-mode hidden></span>
+      <input
+        data-input
+        type="text"
+        role="combobox"
+        aria-label="Search the demo launcher"
+        aria-expanded="true"
+        aria-controls="demo-results"
+        aria-autocomplete="list"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+        placeholder="Search apps, windows and commands"
+      />
+    </div>
+
+    <div class="body">
+      <ul class="results" id="demo-results" role="listbox" aria-label="Results" data-results>
+        {
+          FREQUENT.map((item, i) => (
+            <li class="row" role="option" id={`demo-opt-${i}`} aria-selected={i === 0 ? "true" : "false"}>
+              <span
+                class:list={["icon", `icon-${item.kind}`]}
+                style={item.colour ? `--c: ${item.colour}` : undefined}
+              >
+                {item.kind === "command" ? "›" : item.name.charAt(0)}
+              </span>
+              <span class="text">
+                <span class="name">{item.name}</span>
+                <span class="detail">{item.detail}</span>
+              </span>
+              <span class="kind">{KIND_LABEL[item.kind]}</span>
+            </li>
+          ))
+        }
+      </ul>
+      <div class="emoji" data-emoji hidden>
+        <div class="grid" id="demo-emoji" role="listbox" aria-label="Emoji" data-grid></div>
+        <p class="caption" data-caption></p>
+      </div>
+      <div class="preview" data-preview hidden></div>
+    </div>
+
+    <div class="foot">
+      <span class="status" data-status aria-live="polite"></span>
+      <span class="hints" aria-hidden="true">
+        <span><kbd>↵</kbd> Open</span>
+        <span><kbd>ctrl</kbd><kbd>k</kbd> Actions</span>
+      </span>
+    </div>
+  </div>
+</figure>
+
+<script>
+  import {
+    APPS,
+    CLIPBOARD,
+    COMMANDS,
+    EMOJI,
+    FREQUENT,
+    KIND_LABEL,
+    MODE_LABEL,
+    PREFIXES,
+    WINDOWS,
+    type Emoji,
+    type Item,
+    type Mode,
+  } from "../lib/demo";
+
+  const GRID_COLUMNS = 8;
+
+  type Match = { score: number; hits: number[] };
+
+  // Prefix matches beat word starts, which beat any other run of letters
+  // in order: the same shape as Rockhopper's ranking, without the history.
+  function match(query: string, text: string): Match | null {
+    const q = query.toLowerCase();
+    const t = text.toLowerCase();
+    if (!q) return { score: 0, hits: [] };
+    const range = (from: number) => Array.from(q, (_, i) => from + i);
+    if (t.startsWith(q)) return { score: 1000 - t.length, hits: range(0) };
+    const word = t.search(new RegExp(`\\b${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    if (word > 0) return { score: 800 - word, hits: range(word) };
+    const at = t.indexOf(q);
+    if (at >= 0) return { score: 600 - at, hits: range(at) };
+    const hits: number[] = [];
+    let from = 0;
+    for (const ch of q) {
+      const found = t.indexOf(ch, from);
+      if (found < 0) return null;
+      hits.push(found);
+      from = found + 1;
+    }
+    return { score: 300 - (hits[hits.length - 1] - hits[0]), hits };
+  }
+
+  function rank<T>(query: string, items: T[], fields: (item: T) => string[]) {
+    return items
+      .map((item) => {
+        const [name, ...rest] = fields(item);
+        const own = match(query, name);
+        const best = rest.reduce<number>((top, field) => {
+          const m = match(query, field);
+          return m ? Math.max(top, m.score - 100) : top;
+        }, own?.score ?? -1);
+        return { item, score: best, hits: own && own.score === best ? own.hits : [] };
+      })
+      .filter((r) => r.score >= 0)
+      .sort((a, b) => b.score - a.score);
+  }
+
+  function actionsFor(item: Item | Emoji): Item[] {
+    const action = (name: string, does: string, extra: Partial<Item> = {}): Item => ({
+      kind: "command",
+      name,
+      detail: "",
+      does,
+      ...extra,
+    });
+    if ("char" in item) {
+      return [
+        action("Copy Emoji", `Copies ${item.char}`),
+        action("Copy Shortcode", `Copies :${item.code}:`),
+      ];
+    }
+    switch (item.kind) {
+      case "app":
+        return [
+          action(`Open ${item.name}`, item.does),
+          ...(item.name === "Firefox"
+            ? [action("New Private Window", "Opens a private Firefox window")]
+            : []),
+          action("Copy Command", `Copies the command that starts ${item.name}`),
+          action("Reset Ranking", `Forgets how often you opened ${item.name}`),
+        ];
+      case "window": {
+        const app = item.detail.split(" · ")[0];
+        return [
+          action("Switch to Window", item.does),
+          action(`Open New ${app}`, `Opens another ${app} window`),
+          action("Close Window", "Closes the window by id"),
+          action("Copy Title", `Copies “${item.name}”`),
+          action("Toggle Fullscreen", "Makes the window fullscreen"),
+          action("Float Window", "Floats the window"),
+          action("Set Width to 1/2", "Sets the column to half the output"),
+          action("Move to Workspace…", "Lists your workspaces"),
+          action("Move to Monitor…", "Lists your outputs"),
+          action("Screenshot Window", "Takes a screenshot of the window"),
+        ];
+      }
+      case "clipboard":
+        return [
+          action("Paste Entry", item.does),
+          action("Delete Entry", "Deletes this entry from disk"),
+          action("Delete All Entries", "Deletes the whole history", { confirm: true }),
+        ];
+      default:
+        return [action(item.name, item.does)];
+    }
+  }
+
+  for (const root of document.querySelectorAll<HTMLElement>("[data-launcher]")) {
+    const $ = <T extends HTMLElement>(sel: string) => root.querySelector<T>(sel)!;
+    const input = $<HTMLInputElement>("[data-input]");
+    const modeChip = $("[data-mode]");
+    const results = $("[data-results]");
+    const emojiPane = $("[data-emoji]");
+    const grid = $("[data-grid]");
+    const caption = $("[data-caption]");
+    const preview = $("[data-preview]");
+    const status = $("[data-status]");
+
+    let mode: Mode = "root";
+    let selected = 0;
+    let actions: { title: string; items: Item[]; query: string; selected: number } | null = null;
+    let confirming: Item | null = null;
+    let shown: { item: Item; hits: number[] }[] = [];
+    let shownEmoji: Emoji[] = [];
+    let statusTimer = 0;
+
+    const say = (text: string) => {
+      status.textContent = text;
+      clearTimeout(statusTimer);
+      statusTimer = window.setTimeout(() => (status.textContent = ""), 2600);
+    };
+
+    function el(tag: string, className: string, text?: string) {
+      const node = document.createElement(tag);
+      node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function highlighted(text: string, hits: number[]) {
+      const span = el("span", "name");
+      const set = new Set(hits);
+      let run = "";
+      let inHit = false;
+      const flush = () => {
+        if (!run) return;
+        span.append(inHit ? el("mark", "", run) : document.createTextNode(run));
+        run = "";
+      };
+      Array.from(text).forEach((ch, i) => {
+        if (set.has(i) !== inHit) {
+          flush();
+          inHit = !inHit;
+        }
+        run += ch;
+      });
+      flush();
+      return span;
+    }
+
+    // Scrolls only the list, never the page, so the demo playing by itself
+    // cannot move the page under someone reading further down.
+    function reveal(list: HTMLElement) {
+      const row = list.querySelector<HTMLElement>('[aria-selected="true"]');
+      if (!row) return;
+      const top = row.offsetTop;
+      const bottom = top + row.offsetHeight;
+      if (top < list.scrollTop) list.scrollTop = top - 6;
+      else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight + 6;
+    }
+
+    function compute() {
+      const q = input.value;
+      if (actions) {
+        shown = q ? rank(q, actions.items, (a) => [a.name]) : actions.items.map((item) => ({ item, hits: [] }));
+        return;
+      }
+      if (mode === "emoji") {
+        shownEmoji = q
+          ? rank(q, EMOJI, (e) => [e.name, e.code]).map((r) => r.item)
+          : EMOJI;
+        return;
+      }
+      const pool =
+        mode === "commands" ? COMMANDS : mode === "clipboard" ? CLIPBOARD : [...APPS, ...WINDOWS, ...COMMANDS];
+      if (!q) {
+        const empty = mode === "root" ? FREQUENT : pool;
+        shown = empty.map((item) => ({ item, hits: [] }));
+        return;
+      }
+      shown = rank(q, pool, (item) => [item.name, ...(item.keywords ?? [])]).slice(0, 8);
+    }
+
+    function render() {
+      compute();
+      const label = actions ? actions.title : MODE_LABEL[mode];
+      modeChip.hidden = !label;
+      modeChip.textContent = label;
+      input.placeholder = actions
+        ? "Search actions"
+        : mode === "emoji"
+          ? "Search emoji by name or shortcode"
+          : mode === "clipboard"
+            ? "Search the clipboard history"
+            : mode === "commands"
+              ? "Search commands"
+              : "Search apps, windows and commands";
+
+      const isEmoji = mode === "emoji" && !actions;
+      emojiPane.hidden = !isEmoji;
+      results.hidden = isEmoji;
+      preview.hidden = !(mode === "clipboard" && !actions && shown.length > 0);
+      root.classList.toggle("with-preview", !preview.hidden);
+
+      if (isEmoji) {
+        selected = Math.min(selected, Math.max(shownEmoji.length - 1, 0));
+        grid.replaceChildren(
+          ...shownEmoji.map((emoji, i) => {
+            const cell = el("span", "cell", emoji.char);
+            cell.setAttribute("role", "option");
+            cell.id = `demo-emoji-${i}`;
+            cell.setAttribute("aria-label", emoji.name);
+            cell.setAttribute("aria-selected", String(i === selected));
+            cell.addEventListener("pointerdown", (event) => {
+              event.preventDefault();
+              selected = i;
+              choose();
+            });
+            return cell;
+          }),
+        );
+        const current = shownEmoji[selected];
+        caption.textContent = current ? `${current.name}  ·  :${current.code}:` : "No emoji found";
+        input.setAttribute("aria-controls", "demo-emoji");
+        input.setAttribute("aria-activedescendant", current ? `demo-emoji-${selected}` : "");
+        reveal(grid);
+        return;
+      }
+
+      selected = Math.min(selected, Math.max(shown.length - 1, 0));
+      results.replaceChildren(
+        ...shown.map(({ item, hits }, i) => {
+          const row = el("li", "row");
+          row.id = `demo-opt-${i}`;
+          row.setAttribute("role", "option");
+          row.setAttribute("aria-selected", String(i === selected));
+          const icon = el("span", `icon icon-${item.kind}`, item.kind === "command" ? "›" : item.kind === "clipboard" ? "⧉" : item.name.charAt(0));
+          if (item.colour) icon.style.setProperty("--c", item.colour);
+          const text = el("span", "text");
+          text.append(highlighted(item.name, hits));
+          const asking = confirming === item;
+          const detail = asking ? `Press enter again to ${item.name.toLowerCase()}` : item.detail;
+          if (detail) text.append(el("span", asking ? "detail confirm" : "detail", detail));
+          row.append(icon, text, el("span", "kind", actions ? "" : KIND_LABEL[item.kind]));
+          row.addEventListener("pointerdown", (event) => {
+            event.preventDefault();
+            selected = i;
+            choose();
+          });
+          return row;
+        }),
+      );
+      if (!shown.length) results.append(el("li", "empty", "No results"));
+      input.setAttribute("aria-controls", "demo-results");
+      input.setAttribute("aria-activedescendant", shown.length ? `demo-opt-${selected}` : "");
+      reveal(results);
+
+      if (!preview.hidden) {
+        const entry = shown[selected]?.item;
+        preview.replaceChildren(el("pre", "", entry?.name ?? ""), el("span", "detail", entry?.detail ?? ""));
+      }
+    }
+
+    function setMode(next: Mode) {
+      mode = next;
+      actions = null;
+      confirming = null;
+      selected = 0;
+      input.value = "";
+      render();
+    }
+
+    function choose() {
+      if (mode === "emoji" && !actions) {
+        const emoji = shownEmoji[selected];
+        if (emoji) say(`Copied ${emoji.char} to the clipboard`);
+        return;
+      }
+      const item = shown[selected]?.item;
+      if (!item) return;
+      if (item.confirm && confirming !== item) {
+        confirming = item;
+        render();
+        return;
+      }
+      confirming = null;
+      if (item.opens) {
+        setMode(item.opens);
+        return;
+      }
+      say(item.does);
+      actions = null;
+      input.value = "";
+      render();
+    }
+
+    function toggleActions() {
+      if (actions) {
+        input.value = actions.query;
+        selected = actions.selected;
+        actions = null;
+      } else {
+        const target = mode === "emoji" ? shownEmoji[selected] : shown[selected]?.item;
+        if (!target) return;
+        actions = {
+          title: "char" in target ? target.char : target.name,
+          items: actionsFor(target),
+          query: input.value,
+          selected,
+        };
+        input.value = "";
+        selected = 0;
+      }
+      confirming = null;
+      render();
+    }
+
+    function move(by: number) {
+      const count = mode === "emoji" && !actions ? shownEmoji.length : shown.length;
+      if (!count) return;
+      selected = (selected + by + count) % count;
+      confirming = null;
+      render();
+    }
+
+    function onInput() {
+      if (mode === "root" && !actions) {
+        const prefix = PREFIXES.filter(([p]) => input.value.startsWith(p)).sort((a, b) => b[0].length - a[0].length)[0];
+        if (prefix) {
+          const rest = input.value.slice(prefix[0].length);
+          setMode(prefix[1]);
+          input.value = rest;
+        }
+      }
+      selected = 0;
+      confirming = null;
+      render();
+    }
+
+    function key(name: string, ctrl = false, shift = false): boolean {
+      const inGrid = mode === "emoji" && !actions;
+      if (name === "ArrowDown" || (ctrl && name === "n")) move(inGrid ? GRID_COLUMNS : 1);
+      else if (name === "ArrowUp" || (ctrl && name === "p")) move(inGrid ? -GRID_COLUMNS : -1);
+      else if (inGrid && name === "ArrowRight") move(1);
+      else if (inGrid && name === "ArrowLeft") move(-1);
+      else if (name === "Enter" && !shift) choose();
+      else if (ctrl && name === "k") toggleActions();
+      else if (name === "Escape") {
+        if (actions) toggleActions();
+        else if (input.value) {
+          input.value = "";
+          onInput();
+        } else if (mode !== "root") setMode("root");
+        else say("The launcher closes");
+      } else if (name === "Backspace" && !input.value && !actions && mode !== "root") setMode("root");
+      else return false;
+      return true;
+    }
+
+    input.addEventListener("input", onInput);
+    input.addEventListener("keydown", (event) => {
+      if (key(event.key, event.ctrlKey || event.metaKey, event.shiftKey)) event.preventDefault();
+    });
+
+    // Until someone touches it, the demo types a few searches by itself.
+    const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let playing = !reduced;
+    const stop = () => {
+      if (!playing) return;
+      playing = false;
+      setMode("root");
+    };
+    root.addEventListener("pointerdown", stop, { once: true });
+    input.addEventListener("focus", stop, { once: true });
+
+    const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+    async function type(text: string) {
+      for (const ch of text) {
+        if (!playing) return;
+        input.value += ch;
+        onInput();
+        await sleep(110 + Math.random() * 90);
+      }
+    }
+    async function press(name: string, ctrl = false) {
+      if (!playing) return;
+      key(name, ctrl);
+      await sleep(520);
+    }
+    async function clear() {
+      if (!playing) return;
+      input.value = "";
+      onInput();
+      await sleep(500);
+    }
+
+    const script = async () => {
+      await sleep(900);
+      await type("fire");
+      await sleep(1300);
+      await press("ArrowDown");
+      await sleep(600);
+      await press("k", true);
+      await sleep(1600);
+      await press("Escape");
+      await sleep(600);
+      await clear();
+      await type(">lock");
+      await sleep(1500);
+      await press("Escape");
+      await press("Escape");
+      await type("e party");
+      await sleep(1500);
+      await press("ArrowRight");
+      await sleep(900);
+      await press("Escape");
+      await press("Escape");
+      await type("clip");
+      await sleep(700);
+      await press("Enter");
+      await sleep(900);
+      await press("ArrowDown");
+      await sleep(1400);
+      await press("Escape");
+      await sleep(400);
+    };
+
+    let started = false;
+    const observer = new IntersectionObserver(async ([entry]) => {
+      if (!entry.isIntersecting || started || !playing) return;
+      started = true;
+      observer.disconnect();
+      while (playing) await script();
+    });
+    if (playing) observer.observe(root);
+    render();
+  }
+</script>
+
+<style>
+  .desktop {
+    position: relative;
+    margin: 0;
+    padding: clamp(28px, 7vw, 88px) clamp(12px, 4vw, 48px) clamp(40px, 8vw, 104px);
+    overflow: hidden;
+    border: 1px solid var(--border-strong);
+    border-radius: 20px;
+    isolation: isolate;
+    box-shadow: var(--shadow);
+  }
+
+  .wallpaper {
+    position: absolute;
+    inset: 0;
+    z-index: -2;
+    background:
+      radial-gradient(60% 80% at 15% 110%, #1d6f8a 0%, transparent 60%),
+      radial-gradient(50% 70% at 90% 0%, #3d4fb0 0%, transparent 65%),
+      radial-gradient(40% 60% at 70% 90%, #f5c84c55 0%, transparent 60%),
+      linear-gradient(160deg, #10203a, #0a1424 60%, #07101c);
+  }
+
+  .dim {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background: #05080e80;
+  }
+
+  .panel {
+    --p-bg: #141a27f2;
+    --p-fg: #eceae4;
+    --p-muted: #9aa0ae;
+    --p-border: #ffffff1a;
+    --p-select: #ffffff12;
+    max-width: 720px;
+    margin-inline: auto;
+    overflow: hidden;
+    border: 1px solid var(--p-border);
+    border-radius: 16px;
+    background: var(--p-bg);
+    color: var(--p-fg);
+    box-shadow: 0 30px 80px -20px #000d, 0 0 0 1px #0006;
+    backdrop-filter: blur(24px);
+    font-size: 0.95rem;
+    text-align: left;
+  }
+
+  @media (prefers-color-scheme: light) {
+    .panel {
+      --p-bg: #fbfaf7f2;
+      --p-fg: #141821;
+      --p-muted: #5f6676;
+      --p-border: #0000001a;
+      --p-select: #0000000d;
+    }
+  }
+
+  .search {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--p-border);
+    color: var(--p-muted);
+  }
+
+  .search svg {
+    flex: none;
+  }
+
+  .mode {
+    flex: none;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: var(--accent-strong);
+    color: var(--accent-ink);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+  }
+
+  input {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    outline: 0;
+    background: none;
+    color: var(--p-fg);
+    font: inherit;
+    font-size: clamp(1.05rem, 2.6vw, 1.35rem);
+    caret-color: var(--accent-strong);
+  }
+
+  input::placeholder {
+    color: var(--p-muted);
+    opacity: 0.8;
+  }
+
+  .search:focus-within {
+    box-shadow: inset 0 -2px 0 var(--accent-strong);
+  }
+
+  .body {
+    display: grid;
+    height: 344px;
+  }
+
+  .with-preview .body {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr);
+  }
+
+  .results {
+    position: relative;
+    margin: 0;
+    padding: 6px;
+    overflow-y: auto;
+    list-style: none;
+    scrollbar-width: thin;
+  }
+
+  :global([data-launcher] .row) {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+
+  :global([data-launcher] .row[aria-selected="true"]) {
+    background: var(--p-select);
+    box-shadow: inset 3px 0 0 var(--accent-strong);
+  }
+
+  :global([data-launcher] .icon) {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: var(--c, #3a4256);
+    color: #fff;
+    font-weight: 650;
+    font-size: 0.95rem;
+  }
+
+  :global([data-launcher] .icon-window) {
+    background: transparent;
+    border: 2px solid var(--c);
+    color: var(--p-fg);
+  }
+
+  :global([data-launcher] .icon-command),
+  :global([data-launcher] .icon-clipboard) {
+    background: var(--p-select);
+    color: var(--p-muted);
+    font-family: var(--font-mono);
+    font-size: 1.1rem;
+  }
+
+  :global([data-launcher] .text) {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  :global([data-launcher] .name),
+  :global([data-launcher] .detail) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  :global([data-launcher] .name mark) {
+    background: none;
+    color: var(--accent-strong);
+    font-weight: 650;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :global([data-launcher] .name mark) {
+      color: var(--accent);
+    }
+  }
+
+  :global([data-launcher] .detail) {
+    color: var(--p-muted);
+    font-size: 0.8rem;
+  }
+
+  :global([data-launcher] .detail.confirm) {
+    color: var(--danger);
+  }
+
+  :global([data-launcher] .kind) {
+    flex: none;
+    color: var(--p-muted);
+    font-size: 0.75rem;
+  }
+
+  :global([data-launcher] .empty) {
+    padding: 24px;
+    color: var(--p-muted);
+    text-align: center;
+  }
+
+  .emoji {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 10px;
+  }
+
+  .emoji[hidden],
+  .results[hidden],
+  .preview[hidden] {
+    display: none;
+  }
+
+  .grid {
+    position: relative;
+    display: grid;
+    flex: 1;
+    grid-template-columns: repeat(8, 1fr);
+    align-content: start;
+    gap: 4px;
+    overflow-y: auto;
+  }
+
+  :global([data-launcher] .cell) {
+    display: grid;
+    place-items: center;
+    aspect-ratio: 1;
+    max-height: 64px;
+    border-radius: 10px;
+    font-size: clamp(1.3rem, 4vw, 1.9rem);
+    cursor: pointer;
+  }
+
+  :global([data-launcher] .cell[aria-selected="true"]) {
+    background: var(--p-select);
+    box-shadow: inset 0 0 0 2px var(--accent-strong);
+  }
+
+  .caption {
+    margin: 8px 0 0;
+    color: var(--p-muted);
+    font-size: 0.82rem;
+    text-align: center;
+    white-space: pre;
+  }
+
+  .preview {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    padding: 14px;
+    border-left: 1px solid var(--p-border);
+  }
+
+  :global([data-launcher] .preview pre) {
+    flex: 1;
+    padding: 12px;
+    border: 1px solid var(--p-border);
+    background: var(--p-select);
+    color: var(--p-fg);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 42px;
+    padding: 8px 16px;
+    border-top: 1px solid var(--p-border);
+    color: var(--p-muted);
+    font-size: 0.78rem;
+  }
+
+  .status {
+    overflow: hidden;
+    color: var(--p-fg);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .hints {
+    display: flex;
+    flex: none;
+    gap: 14px;
+  }
+
+  .hints kbd {
+    margin-right: 3px;
+    border-color: var(--p-border);
+    background: var(--p-select);
+    color: var(--p-fg);
+  }
+
+  @media (max-width: 560px) {
+    .body {
+      height: 312px;
+    }
+
+    .with-preview .body {
+      grid-template-columns: 1fr;
+    }
+
+    .preview {
+      display: none;
+    }
+
+    :global([data-launcher] .kind) {
+      display: none;
+    }
+
+    .hints span:last-child {
+      display: none;
+    }
+  }
+</style>

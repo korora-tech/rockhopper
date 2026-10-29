@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "rockhopper-website",
+  "compatibility_date": "2026-10-29",
+  // A static site: no Worker script, only the built assets.
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "404-page",
+    "html_handling": "drop-trailing-slash"
+  },
+  "routes": [
+    {
+      "pattern": "rockhopper.korora.tech",
+      "custom_domain": true
+    }
+  ],
+  "workers_dev": false
+}

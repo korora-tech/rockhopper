@@ -1,0 +1,500 @@
+---
+import { Code } from "astro:components";
+import Base from "../layouts/Base.astro";
+import Launcher from "../components/Launcher.astro";
+import CopyCommand from "../components/CopyCommand.astro";
+import { SITE } from "../lib/site";
+
+const features = [
+  {
+    glyph: "A",
+    title: "Apps",
+    body: "Your desktop entries, with names and keywords in your locale. Installing an app or switching a Nix profile shows up the next time you open the launcher. Each app starts in its own systemd scope, so restarting Rockhopper never closes it.",
+  },
+  {
+    glyph: "▢",
+    title: "Open windows",
+    body: "On niri, open windows are listed with their app and workspace. Enter switches to one; ctrl-k closes it, floats it, resizes it, or moves it to another workspace or monitor.",
+  },
+  {
+    glyph: "›",
+    title: "Commands",
+    body: "Lock, suspend, log out and niri's window actions, plus any command line you add. A {window_id} in your command is filled in with the window that had focus.",
+  },
+  {
+    glyph: "☺",
+    title: "Emoji",
+    body: "Every Unicode emoji in a grid, searchable by name or GitHub shortcode. Drawn from your colour emoji font, so they look the same as everywhere else.",
+  },
+  {
+    glyph: "⧉",
+    title: "Clipboard history",
+    body: "The last 200 copies, text and images. Encrypted at rest with XChaCha20-Poly1305 under a key that lives only in your keyring. Password manager copies are never recorded.",
+  },
+  {
+    glyph: "↑",
+    title: "Learns what you open",
+    body: "Fuzzy matching with nucleo, the matcher from Helix. Names that start with what you typed come first, and what you open often rises, fading again over weeks.",
+  },
+];
+
+const keys = [
+  [["type"], "Search apps, open windows and commands"],
+  [[">"], "Search only commands"],
+  [["e", "space"], "Search emoji"],
+  [["↑", "↓"], "Move the selection (also ctrl-n, ctrl-p, tab)"],
+  [["enter"], "Open the app, switch to the window or run the command"],
+  [["ctrl", "k"], "Every action for the selected result"],
+  [["esc"], "Close the actions, clear the search, or close"],
+] as const;
+
+const yes = "Yes";
+const no = "No";
+const compositors = [
+  { name: "niri", apps: yes, windows: yes, clipboard: yes, output: "Focused output" },
+  { name: "Sway", apps: yes, windows: no, clipboard: yes, output: "Primary, or the one you set" },
+  { name: "Hyprland", apps: yes, windows: no, clipboard: yes, output: "Primary, or the one you set" },
+  { name: "KDE Plasma", apps: yes, windows: no, clipboard: yes, output: "Primary, or the one you set" },
+];
+
+const niri = `spawn-at-startup "rockhopper" "daemon"
+
+binds {
+    Mod+Space { spawn "rockhopper"; }
+    Mod+Shift+V { spawn "rockhopper" "clipboard"; }
+    Mod+Period { spawn "rockhopper" "emoji"; }
+}`;
+
+const homeManager = `# flake.nix
+inputs.rockhopper = {
+  url = "github:korora-tech/rockhopper";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+
+# A Home Manager module
+{ inputs, ... }: {
+  imports = [ inputs.rockhopper.homeModules.default ];
+
+  programs.rockhopper = {
+    enable = true;
+    systemd.enable = true; # or start it from your compositor
+    settings = {
+      appearance.theme = "dark";
+      terminal = [ "ghostty" "-e" ];
+    };
+  };
+}`;
+
+const config = `appearance:
+  theme: system      # system, light or dark
+  width: 720
+terminal: [xdg-terminal-exec]
+prefixes:
+  emoji: "e "
+  windows: "w "
+commands:
+  half-width:
+    name: Half Width
+    run: [niri, msg, action, set-window-width, --id, "{window_id}", "50%"]`;
+---
+
+<Base>
+  <section class="hero wrap">
+    <p class="eyebrow">A native launcher for Wayland</p>
+    <h1>Press a key. Type.<br />Your whole desktop answers.</h1>
+    <p class="lede">
+      Rockhopper opens a search box over the focused output and ranks your apps, open windows,
+      system commands, emoji and clipboard history as you type. It is written in Rust with GPUI and
+      stays running in the background, so it opens the moment you press the key.
+    </p>
+    <div class="cta">
+      <CopyCommand command={SITE.install} />
+      <a class="button" href="/docs">Read the docs</a>
+    </div>
+  </section>
+
+  <section class="demo wrap" aria-labelledby="demo-title">
+    <h2 id="demo-title" class="visually-hidden">Try the launcher</h2>
+    <Launcher />
+    <p class="try">
+      This is a working copy. Click it and type, or try <kbd>&gt;</kbd> for commands,
+      <kbd>e</kbd> <kbd>space</kbd> for emoji, <kbd>ctrl</kbd><kbd>k</kbd> for actions.
+    </p>
+  </section>
+
+  <section id="features" class="wrap section">
+    <p class="eyebrow">One search box</p>
+    <h2>Everything you reach for, ranked as you type</h2>
+    <div class="features">
+      {
+        features.map(({ glyph, title, body }) => (
+          <article>
+            <span class="glyph" aria-hidden="true">
+              {glyph}
+            </span>
+            <h3>{title}</h3>
+            <p>{body}</p>
+          </article>
+        ))
+      }
+    </div>
+  </section>
+
+  <section class="wrap section split">
+    <div>
+      <p class="eyebrow">Keyboard first</p>
+      <h2>Never reach for the mouse</h2>
+      <p class="muted">
+        A prefix narrows the search to one kind of result and shows the mode beside the search box.
+        Backspace in an empty search leaves it. Log Out, Restart and Shut Down ask for a second
+        enter, so a stray keypress never ends your session.
+      </p>
+    </div>
+    <dl class="keys">
+      {
+        keys.map(([combo, what]) => (
+          <div>
+            <dt>
+              {combo.map((k) => (
+                <kbd>{k}</kbd>
+              ))}
+            </dt>
+            <dd>{what}</dd>
+          </div>
+        ))
+      }
+    </dl>
+  </section>
+
+  <section class="wrap section">
+    <p class="eyebrow">Where it runs</p>
+    <h2>Any compositor with wlr layer-shell</h2>
+    <p class="muted narrow">
+      Rockhopper draws as a layer-shell surface and watches the clipboard through wlr data-control.
+      Open windows come from niri's IPC, so they are listed on niri only. GNOME supports neither
+      protocol, so Rockhopper does not run there.
+    </p>
+    <div class="table">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Compositor</th>
+            <th scope="col">Apps, commands, emoji</th>
+            <th scope="col">Clipboard history</th>
+            <th scope="col">Open windows</th>
+            <th scope="col">Opens on</th>
+          </tr>
+        </thead>
+        <tbody>
+          {
+            compositors.map((c) => (
+              <tr>
+                <th scope="row">{c.name}</th>
+                <td class:list={{ no: c.apps === no }}>{c.apps}</td>
+                <td class:list={{ no: c.clipboard === no }}>{c.clipboard}</td>
+                <td class:list={{ no: c.windows === no }}>{c.windows}</td>
+                <td>{c.output}</td>
+              </tr>
+            ))
+          }
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="install" class="wrap section">
+    <p class="eyebrow">Install</p>
+    <h2>One flake, three ways in</h2>
+    <div class="steps">
+      <article>
+        <h3><span>1</span> Try it</h3>
+        <p class="muted">
+          Rockhopper needs Rust 1.92 or newer, so nixpkgs from nixos-26.05 or nixos-unstable. To run
+          it without installing anything:
+        </p>
+        <CopyCommand command={SITE.install} />
+        <p class="muted">
+          The first <code>rockhopper</code> starts a small background process; later ones talk to it
+          over a socket, which is why it opens immediately.
+        </p>
+      </article>
+      <article>
+        <h3><span>2</span> Bind it</h3>
+        <p class="muted">
+          Start it from your compositor so it inherits your session's <code>PATH</code> and
+          <code>XDG_DATA_DIRS</code>. For niri:
+        </p>
+        <Code code={niri} lang="kdl" themes={{ light: "github-light", dark: "github-dark-default" }} defaultColor={false} />
+      </article>
+      <article class="wide">
+        <h3><span>3</span> Keep it</h3>
+        <p class="muted">
+          The flake ships a Home Manager module, an overlay that builds Rockhopper with your nixpkgs,
+          and a package. Settings are written to <code>config.yaml</code>.
+        </p>
+        <div class="pair">
+          <Code code={homeManager} lang="nix" themes={{ light: "github-light", dark: "github-dark-default" }} defaultColor={false} />
+          <div>
+            <p class="file">~/.config/rockhopper/config.yaml</p>
+            <Code code={config} lang="yaml" themes={{ light: "github-light", dark: "github-dark-default" }} defaultColor={false} />
+            <p class="muted small">
+              Every key is optional, and the file is read again each time the launcher opens.{" "}
+              <a href="/docs#configuration">All options</a>
+            </p>
+          </div>
+        </div>
+      </article>
+    </div>
+  </section>
+</Base>
+
+<style>
+  .hero {
+    padding-top: clamp(48px, 10vw, 112px);
+    text-align: center;
+  }
+
+  h1 {
+    margin: 0 auto;
+    max-width: 16ch;
+    font-size: clamp(2.3rem, 7vw, 4.4rem);
+    font-weight: 700;
+    letter-spacing: -0.035em;
+  }
+
+  .lede {
+    max-width: 60ch;
+    margin: 24px auto 0;
+    color: var(--fg-muted);
+    font-size: clamp(1rem, 2.2vw, 1.15rem);
+  }
+
+  .cta {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px;
+    margin-top: 36px;
+  }
+
+  .cta > :global(.copy) {
+    width: min(100%, 440px);
+  }
+
+  .button {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 20px;
+    min-height: 48px;
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    font-weight: 600;
+    font-size: 0.92rem;
+    text-decoration: none;
+  }
+
+  .button:hover {
+    border-color: var(--fg-faint);
+  }
+
+  .demo {
+    margin-top: clamp(48px, 8vw, 80px);
+  }
+
+  .try {
+    margin: 16px 0 0;
+    color: var(--fg-faint);
+    font-size: 0.88rem;
+    text-align: center;
+  }
+
+  .section {
+    margin-top: clamp(80px, 12vw, 144px);
+  }
+
+  h2 {
+    margin: 0;
+    max-width: 22ch;
+    font-size: clamp(1.7rem, 4.4vw, 2.6rem);
+    font-weight: 680;
+  }
+
+  .muted {
+    color: var(--fg-muted);
+  }
+
+  .narrow {
+    max-width: 64ch;
+  }
+
+  .small {
+    font-size: 0.86rem;
+  }
+
+  .features {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+    gap: 1px;
+    margin-top: 40px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--border);
+  }
+
+  .features article {
+    padding: 28px;
+    background: var(--bg-raised);
+  }
+
+  .glyph {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 9px;
+    background: var(--select);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-weight: 600;
+  }
+
+  .features h3 {
+    margin: 18px 0 8px;
+    font-size: 1.08rem;
+  }
+
+  .features p {
+    margin: 0;
+    color: var(--fg-muted);
+    font-size: 0.93rem;
+  }
+
+  .split {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+    gap: 40px 64px;
+    align-items: start;
+  }
+
+  .split .muted {
+    margin-top: 20px;
+  }
+
+  .keys {
+    margin: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .keys div {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    gap: 16px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .keys dt {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .keys dd {
+    margin: 0;
+    color: var(--fg-muted);
+    font-size: 0.93rem;
+  }
+
+  .table {
+    margin-top: 32px;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-raised);
+  }
+
+  .table tr:last-child > * {
+    border-bottom: 0;
+  }
+
+  tbody th {
+    color: var(--fg);
+    font-size: 0.92rem;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  td.no {
+    color: var(--fg-faint);
+  }
+
+  .steps {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+    gap: 20px;
+    margin-top: 40px;
+  }
+
+  .steps article {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-width: 0;
+    padding: 28px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-raised);
+  }
+
+  .steps .wide {
+    grid-column: 1 / -1;
+  }
+
+  .steps h3 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    font-size: 1.15rem;
+  }
+
+  .steps h3 span {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--accent-strong);
+    color: var(--accent-ink);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+  }
+
+  .steps p {
+    margin: 0;
+  }
+
+  .steps :global(pre) {
+    background: var(--bg-sunken);
+  }
+
+  .pair {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+    gap: 20px;
+  }
+
+  .pair > div {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .file {
+    color: var(--fg-faint);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+  }
+</style>
