@@ -18,7 +18,7 @@ npm run preview   # serve the site locally with cf dev, as Cloudflare would
 
 ## Deploy
 
-`.github/workflows/website.yml` builds every pull request that touches `website/` or `README.md`, and runs `cf deploy` on `main`. The deploy job runs in the `production` environment and logs in to Infisical over OIDC as this repository's identity, which reads the Korora Tech Cloudflare token (`CLOUDFLARE_API_TOKEN`). The identity, its environment and its `INFISICAL_MACHINE_IDENTITY_ID` secret are managed in [korora-tech/korora-tech](https://github.com/korora-tech/korora-tech).
+`.github/workflows/website.yml` builds every pull request that touches `website/` or `README.md`, and runs `cf deploy` on `main`. The deploy job runs in the `production` environment and logs in to Infisical over OIDC as the Korora Tech CI identity, which reads the Korora Tech Cloudflare token (`CLOUDFLARE_API_TOKEN`). The identity, this repository's `production` environment and its `INFISICAL_MACHINE_IDENTITY_ID` secret are managed in [korora-tech/korora-tech](https://github.com/korora-tech/korora-tech).
 
 `cloudflare.config.ts` names the account and attaches the Worker to `rockhopper.korora.tech` as a custom domain, so Cloudflare creates the DNS record and certificate on first deploy. The `korora.tech` zone must be in the same account.
 
