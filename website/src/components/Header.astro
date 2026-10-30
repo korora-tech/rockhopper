@@ -2,7 +2,8 @@
 import Logo from "./Logo.astro";
 import { SITE } from "../lib/site";
 
-const path = Astro.url.pathname;
+// With build.format "file" the pathname ends in .html; links never do.
+const path = Astro.url.pathname.replace(/(?:\/index)?\.html$/, "") || "/";
 const links = [
   { href: "/#features", label: "Features" },
   { href: "/#install", label: "Install" },

@@ -12,7 +12,9 @@ interface Props {
 
 const { title, description = SITE.description } = Astro.props;
 const fullTitle = title ? `${title} · ${SITE.name}` : `${SITE.name}: a native launcher for Wayland`;
-const canonical = new URL(Astro.url.pathname, Astro.site);
+// With build.format "file" the pathname ends in .html, which Cloudflare
+// redirects to the address without it.
+const canonical = new URL(Astro.url.pathname.replace(/(?:\/index)?\.html$/, "") || "/", Astro.site);
 ---
 
 <!doctype html>
