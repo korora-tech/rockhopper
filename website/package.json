@@ -9,8 +9,8 @@
     "dev": "astro dev",
     "build": "astro build",
     "check": "astro check",
-    "preview": "npm run build && wrangler dev",
-    "deploy": "npm run build && wrangler deploy"
+    "preview": "cf dev",
+    "deploy": "cf deploy"
   },
   "dependencies": {
     "astro": "^7.4.4"
@@ -18,7 +18,7 @@
   "devDependencies": {
     "@astrojs/check": "^0.9.12",
     "@types/node": "^24.19.2",
-    "typescript": "^6.0.0",
-    "wrangler": "^4.155.0"
+    "cf": "1.0.0-beta.26",
+    "typescript": "^6.0.0"
   }
 }
