@@ -7,7 +7,10 @@ export default defineConfig({
   // Static output: the adapter writes the Build Output cf deploys, and the
   // Worker serves only static assets.
   output: "static",
-  adapter: cloudflare(),
+  // A static site needs no KV sessions or Images binding, and prerenders in
+  // Node like a plain Astro build.
+  adapter: cloudflare({ imageService: "compile", prerenderEnvironment: "node" }),
+  session: false,
   trailingSlash: "never",
   build: {
     format: "file",
