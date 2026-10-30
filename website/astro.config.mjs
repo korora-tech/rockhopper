@@ -1,11 +1,13 @@
 // @ts-check
+import cloudflare from "@astrojs/cloudflare";
 import { defineConfig, fontProviders } from "astro/config";
 
 export default defineConfig({
   site: "https://rockhopper.korora.tech",
-  // Static output: Cloudflare serves dist/ as Workers static assets, so no
-  // adapter or server runtime is needed.
+  // Static output: the adapter writes the Build Output cf deploys, and the
+  // Worker serves only static assets.
   output: "static",
+  adapter: cloudflare(),
   trailingSlash: "never",
   build: {
     format: "file",
