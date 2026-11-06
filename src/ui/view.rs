@@ -64,6 +64,7 @@ const EMOJI_PLACEHOLDER: &str = "Search emoji…";
 const APPS_PLACEHOLDER: &str = "Search apps…";
 const WINDOWS_PLACEHOLDER: &str = "Search windows…";
 const COMMANDS_PLACEHOLDER: &str = "Search commands…";
+const FEEDBACK_PLACEHOLDER: &str = "Send feedback…";
 
 actions!(
     rockhopper,
@@ -130,6 +131,8 @@ enum Mode {
     Clipboard,
     /// Results index the launcher's emoji, shown as a grid.
     Emoji,
+    /// The feedback composer; its state lives in the launcher.
+    Feedback,
 }
 
 impl From<Scope> for Mode {
@@ -332,6 +335,7 @@ impl LauncherView {
             Mode::Only(Kind::Command) => COMMANDS_PLACEHOLDER,
             Mode::Clipboard => CLIPBOARD_PLACEHOLDER,
             Mode::Emoji => EMOJI_PLACEHOLDER,
+            Mode::Feedback => FEEDBACK_PLACEHOLDER,
         };
         self.input.update(cx, |input, cx| {
             input.set_value(query.clone(), window, cx);
@@ -374,6 +378,10 @@ impl LauncherView {
         }
         self.menu = None;
         self.confirming = None;
+        if self.mode == Mode::Feedback {
+            self.results.clear();
+            return cx.notify();
+        }
         let launcher = self.launcher.read(cx);
         self.results = match self.mode {
             Mode::Search if self.query.trim().is_empty() => Vec::new(),
@@ -416,6 +424,7 @@ impl LauncherView {
                 self.ranker
                     .rank(&candidates, &launcher.history, &self.query, history::now())
             }
+            Mode::Feedback => Vec::new(),
             Mode::Emoji if self.query.trim().is_empty() => {
                 frequent_first(&launcher.emojis, &launcher.history)
             }
@@ -478,6 +487,13 @@ impl LauncherView {
     }
 
     fn step(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if self.mode == Mode::Feedback {
+            self.launcher.update(cx, |l, cx| {
+                l.composer.cycle_kind();
+                cx.notify();
+            });
+            return;
+        }
         if let Some(picker) = &mut self.picker {
             let n = picker.results.len();
             if n > 0 {
@@ -543,6 +559,9 @@ impl LauncherView {
     }
 
     fn open(&mut self, _: &Open, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == Mode::Feedback {
+            return self.feedback_enter(window, cx);
+        }
         if self.picker.is_some() {
             return self.choose_picker(cx);
         }
@@ -557,6 +576,7 @@ impl LauncherView {
                 }),
                 Mode::Clipboard => MenuAction::CopyClip,
                 Mode::Emoji => MenuAction::CopyEmoji,
+                Mode::Feedback => return,
             };
             self.run(target, action, window, cx);
         }
@@ -625,6 +645,7 @@ impl LauncherView {
                 match item {
                     Item::Clipboard => return self.set_mode(Mode::Clipboard, window, cx),
                     Item::Emoji => return self.set_mode(Mode::Emoji, window, cx),
+                    Item::Feedback => return self.open_feedback(window, cx),
                     _ => {}
                 }
                 if let Item::Window {
@@ -687,6 +708,110 @@ impl LauncherView {
                 self.launcher.update(cx, |l, cx| l.clear_clips(cx));
             }
         }
+    }
+
+    fn render_feedback(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        use crate::feedback::composer::{Stage, Status};
+        let launcher = self.launcher.read(cx);
+        let c = &launcher.composer;
+        let muted = theme.muted_foreground;
+        let destination = match &launcher.github_user {
+            Some(user) => format!(
+                "Will be posted publicly to {} as {user}",
+                crate::feedback::REPO
+            ),
+            None => format!(
+                "Not signed in: opens {} in your browser, where you press Submit",
+                crate::feedback::REPO
+            ),
+        };
+        let kinds = h_flex()
+            .gap_2()
+            .children(crate::feedback::Kind::ALL.map(|kind| {
+                let on = kind == c.draft.kind;
+                div()
+                    .px_2()
+                    .py_0p5()
+                    .rounded(px(6.))
+                    .text_xs()
+                    .when(on, |d| {
+                        d.bg(theme.accent).text_color(theme.accent_foreground)
+                    })
+                    .when(!on, |d| d.text_color(muted))
+                    .child(kind.label())
+            }));
+        let field = |label: &'static str, value: &str, current: bool| {
+            let shown = if current {
+                String::new()
+            } else {
+                value.to_owned()
+            };
+            div()
+                .when(current, |d| d.text_color(theme.foreground))
+                .child(format!("{label}: {shown}"))
+        };
+        let mut col = v_flex()
+            .px_4()
+            .py_3()
+            .gap_1p5()
+            .text_sm()
+            .text_color(muted)
+            .child(destination)
+            .child(kinds);
+        if c.stage != Stage::Review {
+            if c.stage != Stage::Title {
+                col = col.child(field("Title", &c.draft.title, false));
+            }
+            if matches!(c.stage, Stage::Steps) {
+                col = col.child(field("Description", &c.draft.description, false));
+            }
+        } else {
+            let (title, body) = c.review_text();
+            col = col
+                .child(
+                    div()
+                        .text_color(theme.foreground)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .max_h(px(160.))
+                        .overflow_hidden()
+                        .p_2()
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(theme.border)
+                        .text_color(theme.foreground)
+                        .child(body),
+                )
+                .child(if c.draft.include_diagnostics {
+                    format!(
+                        "Diagnostics included (d to remove): {}",
+                        crate::feedback::diagnostics()
+                    )
+                } else {
+                    "No diagnostics are included (d to add the app version)".to_owned()
+                });
+        }
+        col = match &c.status {
+            Status::Editing => col,
+            Status::Sending => col.child("Sending…"),
+            Status::Sent(issue) => col.child(
+                div()
+                    .text_color(theme.foreground)
+                    .child(format!("Created {}", issue.url)),
+            ),
+            Status::Failed(message) => col.child(
+                div()
+                    .text_color(theme.danger)
+                    .child(format!("{message}. Your draft is kept; enter to retry.")),
+            ),
+        };
+        if let Some(notice) = &launcher.github_notice {
+            col = col.child(notice.clone());
+        }
+        col.into_any_element()
     }
 
     fn open_picker(
@@ -804,6 +929,9 @@ impl LauncherView {
             return;
         }
         self.confirming = None;
+        if self.mode == Mode::Feedback {
+            return;
+        }
         if self.menu.take().is_none()
             && let Some(&target) = self.results.get(self.selected)
         {
@@ -834,6 +962,7 @@ impl LauncherView {
                     }
                     (title_case(emoji.name), actions)
                 }
+                Mode::Feedback => return,
             };
             self.menu = Some(Menu {
                 target,
@@ -845,9 +974,80 @@ impl LauncherView {
         cx.notify();
     }
 
+    fn open_feedback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.launcher.update(cx, |l, _| l.composer.resume());
+        self.set_mode(Mode::Feedback, window, cx);
+        self.feedback_load_field(window, cx);
+    }
+
+    /// Put the current stage's text in the input, with its placeholder.
+    fn feedback_load_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (text, placeholder) = {
+            let c = &self.launcher.read(cx).composer;
+            (c.field(), c.placeholder())
+        };
+        self.input.update(cx, |input, cx| {
+            input.set_value(text.clone(), window, cx);
+            input.set_placeholder(placeholder, window, cx);
+        });
+        self.query = text;
+        cx.notify();
+    }
+
+    fn feedback_save(&mut self, cx: &mut Context<Self>) {
+        let text = self.query.clone();
+        self.launcher.update(cx, |l, _| l.composer.save(&text));
+    }
+
+    fn feedback_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::feedback::composer::Next;
+        let text = self.query.clone();
+        // A held key repeats: only a fresh press may send.
+        let reviewing =
+            self.launcher.read(cx).composer.stage == crate::feedback::composer::Stage::Review;
+        if reviewing
+            && !self.confirm_released
+            && self.confirming == Some(Confirm::Entry(usize::MAX))
+        {
+            return;
+        }
+        let next = self.launcher.update(cx, |l, _| {
+            let connected = l.github_user.is_some();
+            l.composer.enter(&text, connected)
+        });
+        self.confirming = None;
+        match next {
+            Next::Send => self.launcher.update(cx, |l, cx| l.send_feedback(cx)),
+            Next::OpenBrowser => self
+                .launcher
+                .update(cx, |l, cx| l.open_feedback_in_browser(cx)),
+            Next::OpenIssue(url) => self.launcher.update(cx, |l, cx| l.open_issue(&url, cx)),
+            Next::CopyIssue(url) => self
+                .launcher
+                .update(cx, |l, cx| l.copy_text(&url, None, cx)),
+            Next::Done => return self.set_mode(Mode::Search, window, cx),
+            Next::Nothing => {}
+        }
+        self.feedback_load_field(window, cx);
+        // Entering Review: the next enter must be a new press.
+        self.confirm_released = false;
+        self.confirming = Some(Confirm::Entry(usize::MAX));
+    }
+
+    fn feedback_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.query.clone();
+        self.launcher.update(cx, |l, _| l.composer.back(&text));
+        self.feedback_load_field(window, cx);
+    }
+
     /// Escape closes the actions menu, then clears a query, then leaves the
     /// clipboard history, emoji or a prefix's mode, then closes.
     fn dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == Mode::Feedback {
+            // The draft stays in the launcher: esc is not a discard.
+            self.feedback_save(cx);
+            return self.set_mode(Mode::Search, window, cx);
+        }
         if self.picker.take().is_some() {
             let query = self.query.clone();
             self.input.update(cx, |input, cx| {
@@ -1302,6 +1502,7 @@ impl Render for LauncherView {
             Mode::Only(Kind::Command) => Some("Commands"),
             Mode::Clipboard => Some("Clipboard"),
             Mode::Emoji => Some("Emoji"),
+            Mode::Feedback => Some("Feedback"),
         };
 
         let search = h_flex()
@@ -1357,7 +1558,9 @@ impl Render for LauncherView {
             };
             px(ROW_HEIGHT * rows)
         };
-        let body = if self.picker.is_some() || (!searching && self.mode == Mode::Search) {
+        let body = if self.mode == Mode::Feedback {
+            Some(self.render_feedback(&theme, cx))
+        } else if self.picker.is_some() || (!searching && self.mode == Mode::Search) {
             None
         } else if emoji && !self.results.is_empty() {
             let columns = self.columns;
@@ -1446,6 +1649,7 @@ impl Render for LauncherView {
                 .get(self.selected)
                 .map(|&e| entries[e].item.verb()),
             Mode::Clipboard | Mode::Emoji => self.results.get(self.selected).map(|_| "Copy"),
+            Mode::Feedback => None,
         };
         let footer_new_instance = self.mode == Mode::Search
             && self.results.get(self.selected).is_some_and(|&e| {
@@ -1552,7 +1756,11 @@ impl Render for LauncherView {
                     && this.mode != Mode::Search
                 {
                     cx.stop_propagation();
-                    this.set_mode(Mode::Search, window, cx);
+                    if this.mode == Mode::Feedback {
+                        this.feedback_back(window, cx);
+                    } else {
+                        this.set_mode(Mode::Search, window, cx);
+                    }
                 }
             }))
             .capture_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| {
@@ -1796,6 +2004,8 @@ fn item_icon(icon: ItemIcon, theme: &Theme) -> AnyElement {
                 Symbol::Command => Lucide::SquareTerminal,
                 Symbol::Clipboard => Lucide::ClipboardList,
                 Symbol::Emoji => Lucide::FaceSlightlySmiling,
+                Symbol::Feedback => Lucide::MessageSquare,
+                Symbol::GitHub => Lucide::Github,
                 Symbol::Text => Lucide::Type,
                 Symbol::Image => Lucide::Image,
             };

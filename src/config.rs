@@ -22,6 +22,7 @@ pub struct Config {
     pub system: System,
     pub clipboard: ClipboardConfig,
     pub emoji: EmojiConfig,
+    pub feedback: FeedbackConfig,
     /// Text that, typed first, narrows the search to one kind of result.
     pub prefixes: Prefixes,
     /// Commands by key, laid over the built-in ones.
@@ -97,6 +98,14 @@ impl Prefixes {
         .max_by_key(|(_, prefix, _)| prefix.len())
         .map(|(scope, _, rest)| (scope, rest))
     }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct FeedbackConfig {
+    /// Client id of the GitHub App used to sign in (public, not a secret).
+    /// Without it, feedback is sent through the browser.
+    pub github_client_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -196,6 +205,7 @@ impl Default for Config {
             system: System::default(),
             clipboard: ClipboardConfig::default(),
             emoji: EmojiConfig::default(),
+            feedback: FeedbackConfig::default(),
             prefixes: Prefixes::default(),
             commands: BTreeMap::new(),
         }
