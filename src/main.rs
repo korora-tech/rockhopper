@@ -5,6 +5,7 @@ mod clipboard;
 mod commands;
 mod config;
 mod emoji;
+mod feedback;
 mod history;
 mod icons;
 mod ipc;

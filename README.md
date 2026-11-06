@@ -62,6 +62,8 @@ Starting Rockhopper from the compositor gives it your session's `PATH` and `XDG_
 | Log Out, Restart, Shut Down | Press `enter` twice: the first press asks for confirmation | |
 | Clipboard History | Open the clipboard history | |
 | Search Emoji | Open the emoji picker | |
+| Send Feedback | Open the [feedback composer](#send-feedback) | |
+| Connect / Disconnect GitHub | Sign in to or out of GitHub for feedback | |
 | Niri window commands | Run it | |
 
 On niri, root search also lists **Toggle Fullscreen**, **Float Window** or **Tile Window**, **Center Window**, **Maximize Column**, column widths of 1/3, 1/2 or 2/3, **Center Column**, **Toggle Tabbed Column**, **Move Window to Next Monitor**, **Move Window to Workspace Up/Down**, and **Open Overview**. These commands are hidden on Sway and Hyprland. When no window was focused at launch, only **Open Overview** from this set is listed. Focus-dependent commands run only after the overlay closes and Rockhopper confirms focus returned to the same window; if it did not, Rockhopper does not send the action and reopens with an error.
@@ -122,6 +124,36 @@ Icons come from your icon theme: the configured `icon_theme`, otherwise the GTK 
 
 Emoji are drawn from a colour emoji font's own images (Noto Color Emoji or JoyPixels, or the font set in `emoji.font`), so they look the same as in other apps. Emoji newer than that font are left out of the picker, since they would show as empty boxes. Without such a font, emoji are drawn as text.
 
+## Send feedback
+
+Search **Send Feedback** (or `feedback`, `report bug`) to report a bug or idea to [`korora-tech/rockhopper`](https://github.com/korora-tech/rockhopper/issues). It works without niri, the clipboard history or any account.
+
+| Key | Action |
+|---|---|
+| `enter` | Accept the title, then the description, then (bugs only) optional steps to reproduce, then reach the review |
+| `tab` | Change the type: Bug, Feature request, Other |
+| `backspace` in an empty field | Go back a step |
+| `esc` | Leave the composer. The draft is kept until Rockhopper quits or it is sent |
+
+The review shows the exact title and text that will be published, and where. **Nothing is sent until you press `enter` on the review.** There you can also type `d` then `enter` to add the app version (the only diagnostic offered, off by default, shown in full) or `b` then `enter` to use the browser instead.
+
+- **Signed in** (see below): `enter` creates the issue as you, then shows its link. Type `o` or `c` then `enter` to open or copy it. Pressing `enter` again for the same text never makes a second issue, and if GitHub did not answer, a retry first looks for the issue it may have created.
+- **Not signed in**: `enter` opens GitHub's new-issue page with your text filled in, and you press Submit there.
+- If sending fails (expired sign-in, rate limit, no network, no access to the repository) the message says why and the draft stays for a retry.
+
+Feedback contains only what you typed. The query, clipboard, windows, focused app and launched commands are never read, and nothing is uploaded in the background.
+
+### Connect GitHub
+
+**Connect GitHub** opens GitHub's device sign-in in your browser and shows a code to enter; **Disconnect GitHub** deletes the saved sign-in. The token is stored in the Secret Service keyring (never in the config or logs), and there is no pasted token. Without a keyring, you can still use the browser path.
+
+Sign-in needs a GitHub App owned by the `korora-tech` organisation, with **Device flow enabled**, the single repository permission **Issues: read and write**, and no others. It must be **installed on `korora-tech/rockhopper`**: an organisation owner does that once, and without it GitHub answers "access denied" and feedback falls back to the browser. Set its public client id:
+
+```yaml
+feedback:
+  github_client_id: Iv23liXXXXXXXXXXXXXX
+```
+
 ## Clipboard history
 
 Rockhopper watches the clipboard through the wlr data-control protocol (niri, Sway, Hyprland and KDE support it) and keeps the last 200 copies: text, and PNG images. Open it with **Clipboard History** in the launcher or with `rockhopper clipboard`. It lists your copies newest first, with a preview of the selected one; typing searches them. `enter` puts the selected entry back on the clipboard, ready to paste. `ctrl-k` offers Delete Entry and Delete All Entries; Delete All needs a second `enter`.
@@ -153,6 +185,8 @@ icon_theme: Papirus-Dark
 system:
   lock: [loginctl, lock-session]     # replace the Lock Screen command
   logout: [niri, msg, action, quit]  # replace the Log Out command
+feedback:
+  github_client_id: ~      # the GitHub App for Connect GitHub; without it feedback uses the browser
 emoji:
   skin_tone: default   # default, light, medium-light, medium, medium-dark or dark
   font: Noto Color Emoji   # a colour emoji font with PNG glyphs; default: the first installed

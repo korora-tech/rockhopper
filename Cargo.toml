@@ -33,6 +33,7 @@ sha2 = "0.10"
 getrandom = "0.3"
 keyring-core = "1"
 zbus-secret-service-keyring-store = { version = "1", features = ["rt-async-io-crypto-rust"] }
+ureq = { version = "3", features = ["json"] }
 
 [profile.release]
 lto = "thin"

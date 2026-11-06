@@ -37,6 +37,13 @@ pub enum Item {
     Clipboard,
     /// Opens the emoji picker.
     Emoji,
+    /// Opens the feedback composer.
+    Feedback,
+    /// Connects (`true`) or disconnects (`false`) the GitHub account used
+    /// to send feedback.
+    GitHub {
+        connect: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +59,8 @@ pub enum Symbol {
     Power,
     Window,
     Command,
+    Feedback,
+    GitHub,
 }
 
 pub enum ItemIcon {
@@ -295,13 +304,51 @@ pub fn entries(
             key: Some("rockhopper:emoji".into()),
         },
     };
+    let feedback_entry = Entry {
+        item: Item::Feedback,
+        candidate: Candidate {
+            name: "Send Feedback".into(),
+            secondary: [
+                "feedback",
+                "report bug",
+                "bug",
+                "issue",
+                "feature request",
+                "suggest",
+            ]
+            .map(String::from)
+            .to_vec(),
+            key: Some("rockhopper:feedback".into()),
+        },
+    };
+    let github_entries = [true, false].map(|connect| Entry {
+        item: Item::GitHub { connect },
+        candidate: Candidate {
+            name: if connect {
+                "Connect GitHub"
+            } else {
+                "Disconnect GitHub"
+            }
+            .into(),
+            secondary: [
+                "github", "feedback", "account", "sign in", "sign out", "login",
+            ]
+            .map(String::from)
+            .to_vec(),
+            key: Some(format!(
+                "rockhopper:github-{}",
+                if connect { "connect" } else { "disconnect" }
+            )),
+        },
+    });
     app_entries
         .chain(window_entries)
         .chain(system_entries)
         .chain(command_entries)
         .chain(niri_entries)
         .chain(clipboard_entry)
-        .chain([emoji_entry])
+        .chain([emoji_entry, feedback_entry])
+        .chain(github_entries)
         .collect()
 }
 
@@ -314,7 +361,9 @@ impl Item {
             | Self::Command { .. }
             | Self::NiriCommand { .. }
             | Self::Clipboard
-            | Self::Emoji => Kind::Command,
+            | Self::Emoji
+            | Self::Feedback
+            | Self::GitHub { .. } => Kind::Command,
         }
     }
 
@@ -331,6 +380,9 @@ impl Item {
             Self::Command { command, .. } => command.name.clone(),
             Self::Clipboard => "Clipboard History".into(),
             Self::Emoji => "Search Emoji".into(),
+            Self::Feedback => "Send Feedback".into(),
+            Self::GitHub { connect: true } => "Connect GitHub".into(),
+            Self::GitHub { connect: false } => "Disconnect GitHub".into(),
         }
     }
 
@@ -361,6 +413,9 @@ impl Item {
             Self::Command { .. } => None,
             Self::Clipboard => Some("Search what you copied".into()),
             Self::Emoji => Some("Find an emoji and copy it".into()),
+            Self::Feedback => Some(format!("Report a bug or idea to {}", crate::feedback::REPO)),
+            Self::GitHub { connect: true } => Some("Sign in to send feedback as yourself".into()),
+            Self::GitHub { connect: false } => Some("Forget the saved GitHub sign-in".into()),
         }
     }
 
@@ -374,7 +429,9 @@ impl Item {
             | Self::Command { .. }
             | Self::NiriCommand { .. }
             | Self::Clipboard
-            | Self::Emoji => "Command",
+            | Self::Emoji
+            | Self::Feedback
+            | Self::GitHub { .. } => "Command",
         }
     }
 
@@ -402,6 +459,8 @@ impl Item {
             Self::NiriCommand { .. } => ItemIcon::Symbol(Symbol::Window),
             Self::Clipboard => ItemIcon::Symbol(Symbol::Clipboard),
             Self::Emoji => ItemIcon::Symbol(Symbol::Emoji),
+            Self::Feedback => ItemIcon::Symbol(Symbol::Feedback),
+            Self::GitHub { .. } => ItemIcon::Symbol(Symbol::GitHub),
         }
     }
 
@@ -411,7 +470,9 @@ impl Item {
             Self::App(_) => "Open",
             Self::Window { .. } => "Switch to",
             Self::System(_) | Self::Command { .. } | Self::NiriCommand { .. } => "Run",
-            Self::Clipboard | Self::Emoji => "Open",
+            Self::Clipboard | Self::Emoji | Self::Feedback => "Open",
+            Self::GitHub { connect: true } => "Connect",
+            Self::GitHub { connect: false } => "Disconnect",
         }
     }
 
@@ -424,6 +485,8 @@ impl Item {
             Self::NiriCommand { command, .. } => Some(command.key.into()),
             Self::Clipboard => Some("rockhopper:clipboard".into()),
             Self::Emoji => Some("rockhopper:emoji".into()),
+            Self::Feedback => Some("rockhopper:feedback".into()),
+            Self::GitHub { .. } => None,
         }
     }
 
@@ -498,7 +561,9 @@ impl Item {
             | Self::Command { .. }
             | Self::NiriCommand { .. }
             | Self::Clipboard
-            | Self::Emoji => {}
+            | Self::Emoji
+            | Self::Feedback
+            | Self::GitHub { .. } => {}
         }
         if self
             .history_key(apps)

@@ -24,6 +24,9 @@ use crate::clipboard::{Clip, Clipboard, ImageCapture};
 use crate::commands::{self, Command};
 use crate::config::{self, Config, ThemeChoice};
 use crate::emoji::{self, Emoji, EmojiFont};
+use crate::feedback::composer::Composer;
+use crate::feedback::github;
+use crate::feedback::{self, Submitter};
 use crate::history::{self, History};
 use crate::ipc::{Request, TestInput};
 use crate::items::{self, Action, Entry, Item};
@@ -73,6 +76,16 @@ pub struct Launcher {
     pub(super) action_error: Option<String>,
     /// A focus-dependent command held until this overlay is actually closed.
     pending_niri_command: Option<PendingNiriCommand>,
+    /// The feedback draft. Lives here, not in a window, so closing the
+    /// launcher keeps it.
+    pub(super) composer: Composer,
+    submitter: std::sync::Arc<std::sync::Mutex<Submitter>>,
+    /// The connected GitHub account's login.
+    pub(super) github_user: Option<String>,
+    /// Progress of a sign-in, shown until it ends.
+    pub(super) github_notice: Option<String>,
+    github_connecting: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    github_token: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -160,7 +173,14 @@ impl Launcher {
             hide_when_open: false,
             action_error: None,
             pending_niri_command: None,
+            composer: Composer::default(),
+            submitter: Default::default(),
+            github_user: None,
+            github_notice: None,
+            github_connecting: None,
+            github_token: None,
         };
+        this.load_github(cx);
         this.refresh_index(cx);
         this.load_emoji_font(cx);
         this
@@ -356,6 +376,11 @@ impl Launcher {
             niri::available(),
             self.focused_window,
         ));
+        // Offer only the GitHub action that applies.
+        let connected = self.github_token.is_some();
+        let mut entries = (*self.entries).clone();
+        entries.retain(|e| !matches!(e.item, Item::GitHub { connect } if connect == connected));
+        self.entries = Rc::new(entries);
     }
 
     fn refresh_clips(&mut self, cx: &mut Context<Self>) {
@@ -367,6 +392,190 @@ impl Launcher {
 
     pub(super) fn clip_image(&self, id: u64) -> Option<std::sync::Arc<Vec<u8>>> {
         self.clipboard.as_ref()?.image(id)
+    }
+
+    /// Read the saved sign-in from the keyring, off the UI thread.
+    fn load_github(&mut self, cx: &mut Context<Self>) {
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = github::load_token().map(|token| {
+                let user = github::Client::new(token.clone()).username();
+                (token, user)
+            });
+            _ = tx.send_blocking(result);
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Some((token, user))) = rx.recv().await {
+                _ = this.update(cx, |this, cx| {
+                    match user {
+                        Ok(user) => this.github_user = Some(user),
+                        // Expired: forget it so the user can reconnect.
+                        Err(feedback::ApiError::Unauthorized) => {
+                            _ = github::delete_token();
+                            return;
+                        }
+                        // Offline: keep the token, show it as connected.
+                        Err(_) => this.github_user = Some("GitHub".into()),
+                    }
+                    this.github_token = Some(token);
+                    this.rebuild_entries();
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn forget_github(&mut self, cx: &mut Context<Self>) {
+        self.github_token = None;
+        self.github_user = None;
+        self.rebuild_entries();
+        cx.notify();
+    }
+
+    /// Disconnect, or start the browser sign-in.
+    pub(super) fn toggle_github(&mut self, connect: bool, cx: &mut Context<Self>) {
+        if !connect {
+            match github::delete_token() {
+                Ok(()) => {
+                    self.forget_github(cx);
+                    self.github_notice = Some("Disconnected from GitHub".into());
+                }
+                Err(err) => {
+                    self.github_notice = Some(format!("Could not remove the sign-in: {err}"))
+                }
+            }
+            cx.notify();
+            return;
+        }
+        if let Some(cancel) = self.github_connecting.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let Some(client_id) = self.config.feedback.github_client_id.clone() else {
+            self.github_notice = Some(
+                "No GitHub App is set up (feedback.github_client_id). Feedback opens in your browser.".into(),
+            );
+            cx.notify();
+            return;
+        };
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.github_connecting = Some(cancel.clone());
+        self.github_notice = Some("Contacting GitHub…".into());
+        enum Msg {
+            Code(github::DeviceCode),
+            Done(Result<(String, String), feedback::ApiError>),
+        }
+        let (tx, rx) = async_channel::unbounded();
+        std::thread::spawn(move || {
+            let result = (|| {
+                let code = github::start_device_flow(&client_id)?;
+                _ = tx.send_blocking(Msg::Code(code.clone()));
+                let token = github::complete_device_flow(&client_id, &code, &|| {
+                    cancel.load(std::sync::atomic::Ordering::Relaxed)
+                })?;
+                let user = github::Client::new(token.clone()).username()?;
+                Ok((token, user))
+            })();
+            _ = tx.send_blocking(Msg::Done(result));
+        });
+        cx.spawn(async move |this, cx| {
+            while let Ok(msg) = rx.recv().await {
+                let finished = matches!(msg, Msg::Done(_));
+                let alive = this.update(cx, |this, cx| {
+                    match msg {
+                        Msg::Code(code) => {
+                            if let Err(err) = feedback::open_url(&code.verification_uri) {
+                                eprintln!("rockhopper: could not open the browser: {err}");
+                            }
+                            this.github_notice = Some(format!(
+                                "Enter {} at {} to connect GitHub",
+                                code.user_code, code.verification_uri
+                            ));
+                        }
+                        Msg::Done(Ok((token, user))) => {
+                            this.github_connecting = None;
+                            match github::save_token(&token) {
+                                Ok(()) => {
+                                    this.github_token = Some(token);
+                                    this.github_notice = Some(format!("Connected as {user}"));
+                                    this.github_user = Some(user);
+                                }
+                                Err(err) => {
+                                    this.github_notice = Some(format!(
+                                        "Could not save the sign-in to the keyring: {err}"
+                                    ));
+                                }
+                            }
+                            this.rebuild_entries();
+                        }
+                        Msg::Done(Err(err)) => {
+                            this.github_connecting = None;
+                            this.github_notice = Some(err.to_string());
+                        }
+                    }
+                    cx.notify();
+                });
+                if finished || alive.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Publish the draft through the connected account, off the UI thread.
+    pub(super) fn send_feedback(&mut self, cx: &mut Context<Self>) {
+        let Some(token) = self.github_token.clone() else {
+            return self.open_feedback_in_browser(cx);
+        };
+        let draft = self.composer.draft.clone();
+        let submitter = self.submitter.clone();
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let client = github::Client::new(token);
+            let result = submitter
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .submit(&client, &draft);
+            _ = tx.send_blocking(result);
+        });
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            if let Ok(result) = rx.recv().await {
+                _ = this.update(cx, |this, cx| {
+                    if matches!(
+                        result,
+                        Err(feedback::SubmitError::Api(feedback::ApiError::Unauthorized))
+                    ) {
+                        _ = github::delete_token();
+                        this.forget_github(cx);
+                    }
+                    this.composer.sent(result.map_err(|e| e.to_string()));
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// The no-account path: GitHub's own new-issue page, where the user
+    /// still presses Submit.
+    pub(super) fn open_feedback_in_browser(&mut self, cx: &mut Context<Self>) {
+        match feedback::open_url(&self.composer.draft.browser_url()) {
+            Ok(()) => self.hide(cx),
+            Err(err) => {
+                self.composer
+                    .sent(Err(format!("Could not open the browser: {err}")));
+                cx.notify();
+            }
+        }
+    }
+
+    pub(super) fn open_issue(&mut self, url: &str, cx: &mut Context<Self>) {
+        if feedback::open_url(url).is_ok() {
+            self.hide(cx);
+        }
     }
 
     pub(super) fn copy_clip(&mut self, clip: &Clip, cx: &mut Context<Self>) {
@@ -553,6 +762,10 @@ impl Launcher {
         ) = (item, action)
         {
             self.perform_niri_command(*command, *window_id, *is_floating, cx);
+            return;
+        }
+        if let (Item::GitHub { connect }, Action::Primary) = (item, action) {
+            self.toggle_github(*connect, cx);
             return;
         }
         let result = match (item, action) {
