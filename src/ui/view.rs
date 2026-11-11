@@ -191,7 +191,7 @@ enum PickerKind {
 
 #[derive(Clone)]
 enum PickerTarget {
-    Workspace(u64),
+    Workspace(String),
     Monitor(String),
 }
 
@@ -206,7 +206,7 @@ struct PickerEntry {
 /// A searchable second list opened from a window's actions menu.
 struct Picker {
     kind: PickerKind,
-    window_id: u64,
+    window_id: crate::compositor::WindowId,
     entries: Vec<PickerEntry>,
     results: Vec<usize>,
     selected: usize,
@@ -635,13 +635,18 @@ impl LauncherView {
                         Action::MoveToWorkspace => {
                             return self.open_picker(
                                 PickerKind::Workspace,
-                                selected.id,
+                                selected.id.clone(),
                                 window,
                                 cx,
                             );
                         }
                         Action::MoveToMonitor => {
-                            return self.open_picker(PickerKind::Monitor, selected.id, window, cx);
+                            return self.open_picker(
+                                PickerKind::Monitor,
+                                selected.id.clone(),
+                                window,
+                                cx,
+                            );
                         }
                         _ => {}
                     }
@@ -692,7 +697,7 @@ impl LauncherView {
     fn open_picker(
         &mut self,
         kind: PickerKind,
-        window_id: u64,
+        window_id: crate::compositor::WindowId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -705,7 +710,7 @@ impl LauncherView {
                 .into_iter()
                 .map(|workspace| {
                     let name = workspace.name.as_deref().unwrap_or("Unnamed");
-                    let title = format!("Workspace {} · {name}", workspace.idx);
+                    let title = format!("Workspace {} · {name}", workspace.position);
                     let output = workspace.output.unwrap_or_else(|| "No output".into());
                     PickerEntry {
                         candidate: Candidate {
@@ -773,19 +778,24 @@ impl LauncherView {
         let Some((window_id, target, title)) = self.picker.as_ref().and_then(|picker| {
             let &row = picker.results.get(picker.selected)?;
             let entry = &picker.entries[row];
-            Some((picker.window_id, entry.target.clone(), entry.title.clone()))
+            Some((
+                picker.window_id.clone(),
+                entry.target.clone(),
+                entry.title.clone(),
+            ))
         }) else {
             return;
         };
+        let compositor = self.launcher.read(cx).compositor.clone();
         let (result, label) = match target {
             PickerTarget::Workspace(workspace_id) => (
-                crate::niri::move_window_to_workspace(window_id, workspace_id),
+                compositor.move_window_to_workspace(&window_id, &workspace_id),
                 title,
             ),
             PickerTarget::Monitor(output) => {
                 let label = format!("Move window to {output}");
                 (
-                    crate::niri::move_window_to_monitor(window_id, output),
+                    compositor.move_window_to_monitor(&window_id, &output),
                     label,
                 )
             }
@@ -812,7 +822,12 @@ impl LauncherView {
                 Mode::Search | Mode::Only(_) => {
                     let item = &launcher.entries[target].item;
                     let actions = item
-                        .actions(&launcher.apps, &launcher.commands, &launcher.history)
+                        .actions(
+                            &launcher.apps,
+                            &launcher.commands,
+                            &launcher.history,
+                            launcher.compositor.as_ref(),
+                        )
                         .into_iter()
                         .map(MenuAction::Item)
                         .collect();

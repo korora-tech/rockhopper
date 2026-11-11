@@ -2,7 +2,9 @@
 
 A native launcher for Wayland, built with GPUI and [gpui-kit](https://github.com/longbridge/gpui-kit). Press a key, and a large search box appears over the focused output. Type, and your apps, open windows and system commands appear ranked as you go. Rockhopper learns what you open, so it rises in the results. It also keeps an encrypted clipboard history.
 
-Rockhopper needs a compositor that supports wlr layer-shell, such as niri, Sway, Hyprland or KDE. It does not run on GNOME.
+Rockhopper needs a compositor that supports wlr layer-shell, such as niri, Umbriel, Sway, Hyprland or KDE. It does not run on GNOME.
+
+Rockhopper detects the compositor when it opens. It uses niri when `$NIRI_SOCKET` is set, and Umbriel when `$UMBRIEL_SOCKET` (or the `$XDG_RUNTIME_DIR/umbriel-$WAYLAND_DISPLAY.sock` path) exists. Anywhere else it still launches apps, but lists no windows and offers no window commands.
 
 ## Run
 
@@ -37,6 +39,22 @@ binds {
 
 Starting Rockhopper from the compositor gives it your session's `PATH` and `XDG_DATA_DIRS`, so it finds every app you can run.
 
+### Umbriel
+
+Umbriel's bind table launches Rockhopper from its keybinds. The first `rockhopper` command starts the daemon, so no autostart is needed:
+
+```nix
+programs.umbriel.settings = {
+  keybinds = {
+    "Mod+Space" = "spawn rockhopper";
+    "Mod+V" = "spawn rockhopper clipboard";
+    "Mod+E" = "spawn rockhopper emoji";
+  };
+};
+```
+
+Windows, workspaces and outputs come from Umbriel's IPC socket. Window commands use Umbriel's actions. Umbriel has no per-window fullscreen-windowed mode, tabbed-column toggle, window screenshot or move-to-named-output action, so those entries are left out of menus.
+
 ## Using it
 
 | Key | Action |
@@ -68,9 +86,9 @@ On niri, root search also lists **Toggle Fullscreen**, **Float Window** or **Til
 
 Window management actions are available for niri windows only and target the selected window by id, without focusing it first. **Move to Workspace…** searches workspaces by index, name and output; **Move to Monitor…** searches connected outputs. `esc` returns from either picker to the actions menu. Failed niri requests stay visible as an error in the launcher.
 
-Windows come from niri's IPC and show which app and workspace they belong to. On other compositors, no windows are listed.
+Windows come from the compositor's IPC and show which app and workspace they belong to. Where no compositor is detected, no windows are listed.
 
-Lock Screen runs `loginctl lock-session`, which your locker must listen for (for example through `swayidle` or `hypridle`). Log Out uses niri's quit action, or `loginctl terminate-session` elsewhere. Both can be replaced in the config.
+Lock Screen runs `loginctl lock-session`, which your locker must listen for (Noctalia, `swayidle` or `hypridle`). Log Out uses the compositor's quit action (niri's `quit`, or Umbriel's `session-quit`), or `loginctl terminate-session` elsewhere. Both can be replaced in the config.
 
 ### Prefixes
 
@@ -177,9 +195,9 @@ commands:            # merged with the built-in ones by key
     run: [niri, msg, action, set-window-width, --id, "{window_id}", "50%"]
 ```
 
-On niri, Enter on an app focuses its most recently focused window by default. Use `shift-enter` to launch another instance, or select an existing window and choose `Open New <App>` from `ctrl-k`. Set `launcher.focus_existing: false` to always launch on Enter. On Sway and Hyprland, where Rockhopper does not list windows, Enter continues to launch the app.
+On niri and Umbriel, Enter on an app focuses its most recently focused window by default. Use `shift-enter` to launch another instance, or select an existing window and choose `Open New <App>` from `ctrl-k`. Set `launcher.focus_existing: false` to always launch on Enter. On Sway and Hyprland, where Rockhopper does not list windows, Enter continues to launch the app.
 
-On niri, Rockhopper opens on the focused output, which it asks niri for over `$NIRI_SOCKET`. On other compositors it opens on the primary output unless `appearance.output` is set.
+On niri and Umbriel, Rockhopper opens on the focused output, which the compositor reports over its socket. Otherwise it opens on the primary output unless `appearance.output` is set.
 
 ## Installing with Nix
 

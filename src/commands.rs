@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use crate::niri::Window;
+use crate::compositor::Window;
 
 /// Replaced by the target window's id; a command that uses it is only
 /// offered when there is a window to act on.
@@ -44,7 +44,7 @@ impl Command {
     /// The command line for `window`, or `None` when it needs a window and
     /// there is none.
     pub fn argv(&self, window: Option<&Window>) -> Option<Vec<String>> {
-        let id = window.map(|w| w.id.to_string());
+        let id = window.map(|w| w.id.clone());
         self.run
             .iter()
             .map(|arg| match &id {
@@ -58,21 +58,31 @@ impl Command {
 
 #[derive(Deserialize)]
 struct Defaults {
+    compositors: BTreeMap<String, CompositorDefaults>,
+}
+
+#[derive(Deserialize)]
+struct CompositorDefaults {
+    #[serde(default)]
     commands: BTreeMap<String, CommandConfig>,
 }
 
 pub const DEFAULTS: &str = include_str!("defaults.json");
 
-fn builtin() -> BTreeMap<String, CommandConfig> {
+/// The shell command lines for one compositor, keyed by config key.
+fn builtin(compositor: &str) -> BTreeMap<String, CommandConfig> {
     serde_json::from_str::<Defaults>(DEFAULTS)
         .expect("defaults.json is valid")
-        .commands
+        .compositors
+        .remove(compositor)
+        .map(|c| c.commands)
+        .unwrap_or_default()
 }
 
 /// The built-in commands with the configured ones laid over them, by key.
 /// Disabled commands are left out, and incomplete ones are reported.
-pub fn resolve(configured: &BTreeMap<String, CommandConfig>) -> Vec<Command> {
-    let mut merged = builtin();
+pub fn resolve(configured: &BTreeMap<String, CommandConfig>, compositor: &str) -> Vec<Command> {
+    let mut merged = builtin(compositor);
     for (key, over) in configured {
         let entry = merged.entry(key.clone()).or_default();
         let over = over.clone();
@@ -105,7 +115,7 @@ mod tests {
 
     fn window() -> Window {
         Window {
-            id: 42,
+            id: "42".into(),
             title: "t".into(),
             app_id: None,
             workspace: None,
@@ -116,7 +126,7 @@ mod tests {
 
     #[test]
     fn builtins_act_on_a_window() {
-        let commands = resolve(&BTreeMap::new());
+        let commands = resolve(&BTreeMap::new(), "niri");
         let fullscreen = commands
             .iter()
             .find(|c| c.key == "niri-fullscreen")
@@ -156,7 +166,7 @@ mod tests {
             ),
             ("broken".to_string(), CommandConfig::default()),
         ]);
-        let commands = resolve(&configured);
+        let commands = resolve(&configured, "niri");
         let fullscreen = commands
             .iter()
             .find(|c| c.key == "niri-fullscreen")

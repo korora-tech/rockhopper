@@ -3,6 +3,7 @@
 mod apps;
 mod clipboard;
 mod commands;
+mod compositor;
 mod config;
 mod emoji;
 mod history;
@@ -10,7 +11,6 @@ mod icons;
 mod ipc;
 mod items;
 mod launch;
-mod niri;
 mod search;
 mod syscalls;
 mod system;

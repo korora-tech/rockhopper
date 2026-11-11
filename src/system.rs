@@ -2,6 +2,7 @@
 
 use std::process::{Command, Stdio};
 
+use crate::compositor::Compositor;
 use crate::config::Config;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,7 +58,7 @@ impl SystemCommand {
         matches!(self, Self::LogOut | Self::Reboot | Self::PowerOff)
     }
 
-    pub fn run(self, config: &Config) -> std::io::Result<()> {
+    pub fn run(self, config: &Config, compositor: &dyn Compositor) -> std::io::Result<()> {
         let configured = match self {
             Self::Lock => config.system.lock.as_ref(),
             Self::LogOut => config.system.logout.as_ref(),
@@ -71,11 +72,15 @@ impl SystemCommand {
             Self::Suspend => vec!["systemctl".into(), "suspend".into()],
             Self::Reboot => vec!["systemctl".into(), "reboot".into()],
             Self::PowerOff => vec!["systemctl".into(), "poweroff".into()],
-            Self::LogOut if crate::niri::available() => return crate::niri::quit(),
-            Self::LogOut => match std::env::var("XDG_SESSION_ID") {
-                Ok(id) => vec!["loginctl".into(), "terminate-session".into(), id],
-                Err(_) => vec!["loginctl".into(), "terminate-user".into(), whoami()],
-            },
+            Self::LogOut => {
+                if let Some(result) = compositor.log_out() {
+                    return result;
+                }
+                match std::env::var("XDG_SESSION_ID") {
+                    Ok(id) => vec!["loginctl".into(), "terminate-session".into(), id],
+                    Err(_) => vec!["loginctl".into(), "terminate-user".into(), whoami()],
+                }
+            }
         };
         spawn(&argv)
     }

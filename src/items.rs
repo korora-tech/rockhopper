@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use crate::apps::App;
 use crate::commands::Command;
+use crate::compositor::{BuiltinCommand, Compositor, FocusedWindow, Op, Scope, Window, WindowId};
 use crate::history::History;
-use crate::niri::{CommandScope, FocusedWindowSnapshot, NIRI_COMMANDS, NiriCommand, Window};
 use crate::search::Candidate;
 use crate::system::SystemCommand;
 
@@ -19,11 +19,11 @@ pub enum Item {
         app: Option<usize>,
     },
     System(SystemCommand),
-    /// A searchable niri command, bound to the window focused when the
-    /// launcher opened.
-    NiriCommand {
-        command: NiriCommand,
-        window_id: Option<u64>,
+    /// A built-in command, bound to the window focused when the launcher
+    /// opened.
+    Builtin {
+        command: BuiltinCommand,
+        window_id: Option<WindowId>,
         is_floating: bool,
     },
     /// A configured command, with the window it acts on (the focused one)
@@ -80,13 +80,13 @@ pub enum AppLaunchIntent {
     NewInstance,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AppOpen {
-    FocusWindow(u64),
+    FocusWindow(WindowId),
     Launch,
 }
 
-/// Choose how to activate an app. `windows` is niri's most-recently-focused-first list.
+/// Choose how to activate an app. `windows` is most recently focused first.
 pub fn choose_app_open(
     app: &App,
     windows: &[Window],
@@ -104,7 +104,9 @@ pub fn choose_app_open(
                 .as_deref()
                 .is_some_and(|id| app.owns_window(id))
         })
-        .map_or(AppOpen::Launch, |window| AppOpen::FocusWindow(window.id))
+        .map_or(AppOpen::Launch, |window| {
+            AppOpen::FocusWindow(window.id.clone())
+        })
 }
 
 /// What a search scope lists.
@@ -115,21 +117,16 @@ pub enum Kind {
     Command,
 }
 
-fn configured_key_for_niri_command(command: &NiriCommand) -> Option<&'static str> {
-    match command.key {
-        "niri:toggle-fullscreen" => Some("niri-fullscreen"),
-        "niri:toggle-floating" => Some("niri-floating"),
-        "niri:center-window" => Some("niri-center"),
-        _ => None,
-    }
+fn configured_key_for_builtin(command: &BuiltinCommand) -> Option<&'static str> {
+    command.config_key
 }
 
-fn configured_keywords_for_niri_command<'a>(
-    command: &NiriCommand,
+fn configured_keywords_for_builtin<'a>(
+    command: &BuiltinCommand,
     configured: &'a [Command],
     defaults: &[Command],
 ) -> Option<&'a [String]> {
-    let key = configured_key_for_niri_command(command)?;
+    let key = configured_key_for_builtin(command)?;
     let configured = configured.iter().find(|command| command.key == key)?;
     let default = defaults.iter().find(|command| command.key == key)?;
     (configured.name == default.name
@@ -145,8 +142,8 @@ pub fn entries(
     windows: &[Window],
     commands: &[Command],
     clipboard: bool,
-    niri_available: bool,
-    focused_window: Option<FocusedWindowSnapshot>,
+    compositor: &dyn Compositor,
+    focused_window: Option<FocusedWindow>,
 ) -> Vec<Entry> {
     let app_of = |window: &Window| {
         window
@@ -201,49 +198,48 @@ pub fn entries(
         },
     });
     let focused = windows.iter().find(|w| w.is_focused);
-    let window_id = focused_window.map(|window| window.id);
-    let is_floating = focused_window.is_some_and(|window| window.is_floating);
-    let default_commands = crate::commands::resolve(&Default::default());
-    let niri_entries: Vec<_> = if niri_available {
-        NIRI_COMMANDS
-            .iter()
-            .copied()
-            .filter(|command| {
-                configured_key_for_niri_command(command)
-                    .is_none_or(|key| commands.iter().any(|configured| configured.key == key))
-            })
-            .filter(|command| command.scope == CommandScope::Overview || window_id.is_some())
-            .map(|command| {
-                let name = command.name(is_floating);
-                let secondary: Vec<String> =
-                    configured_keywords_for_niri_command(&command, commands, &default_commands)
-                        .map_or_else(
-                            || {
-                                command
-                                    .keywords
-                                    .iter()
-                                    .map(|keyword| (*keyword).into())
-                                    .collect()
-                            },
-                            |keywords| keywords.to_vec(),
-                        );
-                Entry {
-                    item: Item::NiriCommand {
-                        command,
-                        window_id,
-                        is_floating,
+    let window_id = focused_window.as_ref().map(|window| window.id.clone());
+    let is_floating = focused_window
+        .as_ref()
+        .is_some_and(|window| window.is_floating);
+    let default_commands = crate::commands::resolve(&Default::default(), compositor.name());
+    let builtin_entries: Vec<_> = compositor
+        .builtin_commands()
+        .iter()
+        .copied()
+        .filter(|command| compositor.supports(command.op))
+        .filter(|command| {
+            configured_key_for_builtin(command)
+                .is_none_or(|key| commands.iter().any(|configured| configured.key == key))
+        })
+        .filter(|command| command.scope == Scope::Overview || window_id.is_some())
+        .map(|command| {
+            let name = command.name(is_floating);
+            let secondary: Vec<String> =
+                configured_keywords_for_builtin(&command, commands, &default_commands).map_or_else(
+                    || {
+                        command
+                            .keywords
+                            .iter()
+                            .map(|keyword| (*keyword).into())
+                            .collect()
                     },
-                    candidate: Candidate {
-                        name: name.into(),
-                        secondary,
-                        key: Some(command.key.into()),
-                    },
-                }
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+                    |keywords| keywords.to_vec(),
+                );
+            Entry {
+                item: Item::Builtin {
+                    command,
+                    window_id: window_id.clone(),
+                    is_floating,
+                },
+                candidate: Candidate {
+                    name: name.into(),
+                    secondary,
+                    key: Some(command.key.into()),
+                },
+            }
+        })
+        .collect();
     let command_entries: Vec<_> = commands
         .iter()
         .filter(|c| focused.is_some() || !c.needs_window())
@@ -257,11 +253,11 @@ pub fn entries(
             if configured.name != default.name || configured.run != default.run {
                 return true;
             }
-            !niri_entries.iter().any(|entry| {
+            !builtin_entries.iter().any(|entry| {
                 matches!(
                     &entry.item,
-                    Item::NiriCommand { command: native, .. }
-                        if configured_key_for_niri_command(native)
+                    Item::Builtin { command: native, .. }
+                        if configured_key_for_builtin(native)
                             == Some(configured.key.as_str())
                 )
             })
@@ -299,7 +295,7 @@ pub fn entries(
         .chain(window_entries)
         .chain(system_entries)
         .chain(command_entries)
-        .chain(niri_entries)
+        .chain(builtin_entries)
         .chain(clipboard_entry)
         .chain([emoji_entry])
         .collect()
@@ -312,7 +308,7 @@ impl Item {
             Self::Window { .. } => Kind::Window,
             Self::System(_)
             | Self::Command { .. }
-            | Self::NiriCommand { .. }
+            | Self::Builtin { .. }
             | Self::Clipboard
             | Self::Emoji => Kind::Command,
         }
@@ -323,7 +319,7 @@ impl Item {
             Self::App(i) => apps[*i].name.clone(),
             Self::Window { window, .. } => window.title.clone(),
             Self::System(cmd) => cmd.name().into(),
-            Self::NiriCommand {
+            Self::Builtin {
                 command,
                 is_floating,
                 ..
@@ -348,7 +344,7 @@ impl Item {
                 let parts: Vec<String> = owner.into_iter().chain(place).collect();
                 (!parts.is_empty()).then(|| parts.join(" · "))
             }
-            Self::System(_) | Self::NiriCommand { .. } => None,
+            Self::System(_) | Self::Builtin { .. } => None,
             // The window it acts on.
             Self::Command {
                 window: Some(window),
@@ -372,7 +368,7 @@ impl Item {
             Self::Window { .. } => "Window",
             Self::System(_)
             | Self::Command { .. }
-            | Self::NiriCommand { .. }
+            | Self::Builtin { .. }
             | Self::Clipboard
             | Self::Emoji => "Command",
         }
@@ -399,7 +395,7 @@ impl Item {
                 window: Some(_), ..
             } => ItemIcon::Symbol(Symbol::Window),
             Self::Command { .. } => ItemIcon::Symbol(Symbol::Command),
-            Self::NiriCommand { .. } => ItemIcon::Symbol(Symbol::Window),
+            Self::Builtin { .. } => ItemIcon::Symbol(Symbol::Window),
             Self::Clipboard => ItemIcon::Symbol(Symbol::Clipboard),
             Self::Emoji => ItemIcon::Symbol(Symbol::Emoji),
         }
@@ -410,7 +406,7 @@ impl Item {
         match self {
             Self::App(_) => "Open",
             Self::Window { .. } => "Switch to",
-            Self::System(_) | Self::Command { .. } | Self::NiriCommand { .. } => "Run",
+            Self::System(_) | Self::Command { .. } | Self::Builtin { .. } => "Run",
             Self::Clipboard | Self::Emoji => "Open",
         }
     }
@@ -421,7 +417,7 @@ impl Item {
             Self::Window { .. } => None,
             Self::System(cmd) => Some(cmd.key().into()),
             Self::Command { command, .. } => Some(command.history_key()),
-            Self::NiriCommand { command, .. } => Some(command.key.into()),
+            Self::Builtin { command, .. } => Some(command.key.into()),
             Self::Clipboard => Some("rockhopper:clipboard".into()),
             Self::Emoji => Some("rockhopper:emoji".into()),
         }
@@ -429,7 +425,13 @@ impl Item {
 
     /// Everything that can be done with this item, the `enter` action first.
     /// A window also offers every command that acts on a window.
-    pub fn actions(&self, apps: &[App], commands: &[Command], history: &History) -> Vec<ActionDef> {
+    pub fn actions(
+        &self,
+        apps: &[App],
+        commands: &[Command],
+        history: &History,
+        compositor: &dyn Compositor,
+    ) -> Vec<ActionDef> {
         let mut actions = vec![ActionDef::new(Action::Primary, self.verb())];
         match self {
             Self::App(i) => {
@@ -451,42 +453,61 @@ impl Item {
                 }
                 actions.push(ActionDef::new(Action::CloseWindow, "Close Window"));
                 actions.push(ActionDef::new(Action::CopyTitle, "Copy Title"));
-                actions.push(ActionDef::new(
-                    Action::ToggleFullscreen,
-                    "Toggle Fullscreen",
-                ));
-                actions.push(ActionDef::new(
-                    Action::ToggleWindowedFullscreen,
-                    "Toggle Windowed Fullscreen",
-                ));
-                actions.push(ActionDef::new(
-                    Action::ToggleFloating,
-                    if window.is_floating {
-                        "Tile Window"
-                    } else {
-                        "Float Window"
-                    },
-                ));
-                actions.push(ActionDef::new(Action::CenterWindow, "Center Window"));
-                actions.extend([
-                    ActionDef::new(Action::SetWidthThird, "Set Width 1/3"),
-                    ActionDef::new(Action::SetWidthHalf, "Set Width 1/2"),
-                    ActionDef::new(Action::SetWidthTwoThirds, "Set Width 2/3"),
-                    ActionDef::new(Action::SetWidthFull, "Set Width Full"),
-                ]);
-                actions.push(ActionDef::new(
-                    Action::MoveToWorkspace,
-                    "Move to Workspace…",
-                ));
-                actions.push(ActionDef::new(Action::MoveToMonitor, "Move to Monitor…"));
-                actions.push(ActionDef::new(
-                    Action::BringToThisWorkspace,
-                    "Bring to This Workspace",
-                ));
-                actions.push(ActionDef::new(
-                    Action::ScreenshotWindow,
-                    "Screenshot Window",
-                ));
+                let supports = |op| compositor.supports(op);
+                if supports(Op::ToggleFullscreen) {
+                    actions.push(ActionDef::new(
+                        Action::ToggleFullscreen,
+                        "Toggle Fullscreen",
+                    ));
+                }
+                if supports(Op::ToggleWindowedFullscreen) {
+                    actions.push(ActionDef::new(
+                        Action::ToggleWindowedFullscreen,
+                        "Toggle Windowed Fullscreen",
+                    ));
+                }
+                if supports(Op::ToggleFloating) {
+                    actions.push(ActionDef::new(
+                        Action::ToggleFloating,
+                        if window.is_floating {
+                            "Tile Window"
+                        } else {
+                            "Float Window"
+                        },
+                    ));
+                }
+                if supports(Op::Center) {
+                    actions.push(ActionDef::new(Action::CenterWindow, "Center Window"));
+                }
+                if supports(Op::SetWidth(1.0)) {
+                    actions.extend([
+                        ActionDef::new(Action::SetWidthThird, "Set Width 1/3"),
+                        ActionDef::new(Action::SetWidthHalf, "Set Width 1/2"),
+                        ActionDef::new(Action::SetWidthTwoThirds, "Set Width 2/3"),
+                        ActionDef::new(Action::SetWidthFull, "Set Width Full"),
+                    ]);
+                }
+                if compositor.can_move_to_workspace() {
+                    actions.push(ActionDef::new(
+                        Action::MoveToWorkspace,
+                        "Move to Workspace…",
+                    ));
+                }
+                if compositor.can_move_to_output() {
+                    actions.push(ActionDef::new(Action::MoveToMonitor, "Move to Monitor…"));
+                }
+                if compositor.can_move_to_workspace() {
+                    actions.push(ActionDef::new(
+                        Action::BringToThisWorkspace,
+                        "Bring to This Workspace",
+                    ));
+                }
+                if supports(Op::Screenshot) {
+                    actions.push(ActionDef::new(
+                        Action::ScreenshotWindow,
+                        "Screenshot Window",
+                    ));
+                }
                 for (n, command) in commands.iter().enumerate() {
                     // Such as a configured Close Window.
                     if command.needs_window() && !actions.iter().any(|a| a.label == command.name) {
@@ -496,7 +517,7 @@ impl Item {
             }
             Self::System(_)
             | Self::Command { .. }
-            | Self::NiriCommand { .. }
+            | Self::Builtin { .. }
             | Self::Clipboard
             | Self::Emoji => {}
         }
@@ -557,6 +578,7 @@ impl ActionDef {
 mod tests {
     use super::*;
     use crate::apps::DesktopAction;
+    use crate::compositor::{Unknown, niri::Niri};
 
     fn app(id: &str, name: &str) -> App {
         App {
@@ -578,9 +600,9 @@ mod tests {
         }
     }
 
-    fn window_with_id(app_id: &str, id: u64) -> Window {
+    fn window_with_id(app_id: &str, id: &str) -> Window {
         Window {
-            id,
+            id: id.into(),
             title: "README.md".into(),
             app_id: Some(app_id.into()),
             workspace: Some("2".into()),
@@ -590,7 +612,7 @@ mod tests {
     }
 
     fn window(app_id: &str) -> Window {
-        window_with_id(app_id, 7)
+        window_with_id(app_id, "7")
     }
 
     #[test]
@@ -598,9 +620,9 @@ mod tests {
         let app = app("com.mitchellh.ghostty.desktop", "Ghostty");
         // niri supplies windows most-recently-focused first.
         let windows = vec![
-            window_with_id("other", 10),
-            window_with_id("com.mitchellh.ghostty", 9),
-            window_with_id("com.mitchellh.ghostty", 8),
+            window_with_id("other", "10"),
+            window_with_id("com.mitchellh.ghostty", "9"),
+            window_with_id("com.mitchellh.ghostty", "8"),
         ];
         assert_eq!(
             choose_app_open(
@@ -609,7 +631,7 @@ mod tests {
                 AppLaunchPolicy::PreferExisting,
                 AppLaunchIntent::Default
             ),
-            AppOpen::FocusWindow(9)
+            AppOpen::FocusWindow("9".into())
         );
         assert_eq!(
             choose_app_open(
@@ -648,7 +670,7 @@ mod tests {
             &[window("com.mitchellh.ghostty"), window("unknown")],
             &[],
             false,
-            false,
+            &Unknown,
             None,
         );
         let windows: Vec<_> = entries
@@ -673,9 +695,9 @@ mod tests {
     #[test]
     fn window_commands_need_a_focused_window() {
         let apps = vec![app("com.mitchellh.ghostty.desktop", "Ghostty")];
-        let commands = crate::commands::resolve(&Default::default());
+        let commands = crate::commands::resolve(&Default::default(), "niri");
         let count = |windows: &[Window]| {
-            entries(&apps, windows, &commands, false, false, None)
+            entries(&apps, windows, &commands, false, &Unknown, None)
                 .iter()
                 .filter(|e| matches!(e.item, Item::Command { .. }))
                 .count()
@@ -686,7 +708,7 @@ mod tests {
             ..window("com.mitchellh.ghostty")
         };
         assert_eq!(count(std::slice::from_ref(&focused)), commands.len());
-        let entries = entries(&apps, &[focused], &commands, false, false, None);
+        let entries = entries(&apps, &[focused], &commands, false, &Unknown, None);
         let fullscreen = entries
             .iter()
             .find(|e| e.candidate.name == "Toggle Fullscreen")
@@ -699,37 +721,37 @@ mod tests {
     }
 
     #[test]
-    fn niri_commands_are_gated_by_compositor_and_focused_window() {
-        let captured = Some(FocusedWindowSnapshot {
-            id: 41,
+    fn builtin_commands_are_gated_by_compositor_and_focused_window() {
+        let captured = Some(FocusedWindow {
+            id: "41".into(),
             is_floating: false,
         });
-        let on_other_compositor = entries(&[], &[], &[], false, false, captured);
+        let on_other_compositor = entries(&[], &[], &[], false, &Unknown, captured);
         assert!(
             on_other_compositor
                 .iter()
-                .all(|entry| !matches!(entry.item, Item::NiriCommand { .. }))
+                .all(|entry| !matches!(entry.item, Item::Builtin { .. }))
         );
 
-        let configured = crate::commands::resolve(&Default::default());
-        let no_focused_window = entries(&[], &[], &configured, false, true, None);
+        let configured = crate::commands::resolve(&Default::default(), "niri");
+        let no_focused_window = entries(&[], &[], &configured, false, &Niri, None);
         let names: Vec<_> = no_focused_window
             .iter()
             .filter_map(|entry| match &entry.item {
-                Item::NiriCommand { .. } => Some(entry.item.title(&[])),
+                Item::Builtin { .. } => Some(entry.item.title(&[])),
                 _ => None,
             })
             .collect();
         assert_eq!(names, ["Open Overview"]);
 
-        let focused = Some(FocusedWindowSnapshot {
-            id: 41,
+        let focused = Some(FocusedWindow {
+            id: "41".into(),
             is_floating: true,
         });
-        let with_focus = entries(&[], &[], &configured, false, true, focused);
+        let with_focus = entries(&[], &[], &configured, false, &Niri, focused);
         let commands: Vec<_> = with_focus
             .iter()
-            .filter(|entry| matches!(entry.item, Item::NiriCommand { .. }))
+            .filter(|entry| matches!(entry.item, Item::Builtin { .. }))
             .collect();
         let names: Vec<_> = commands.iter().map(|entry| entry.item.title(&[])).collect();
         assert_eq!(names.len(), 13);
@@ -741,11 +763,11 @@ mod tests {
             .unwrap();
         assert!(matches!(
             floating.item,
-            Item::NiriCommand {
-                window_id: Some(41),
+            Item::Builtin {
+                window_id: Some(ref id),
                 is_floating: true,
                 ..
-            }
+            } if id == "41"
         ));
         assert!(floating.candidate.secondary.contains(&"float".into()));
     }
@@ -753,10 +775,10 @@ mod tests {
     #[test]
     fn action_lists() {
         let apps = vec![app("a.desktop", "A")];
-        let commands = crate::commands::resolve(&Default::default());
+        let commands = crate::commands::resolve(&Default::default(), "niri");
         let mut history = History::default();
         let labels = |item: &Item, h: &History| -> Vec<String> {
-            item.actions(&apps, &commands, h)
+            item.actions(&apps, &commands, h, &Niri)
                 .into_iter()
                 .map(|a| a.label)
                 .collect()
@@ -806,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn niri_window_actions_are_available_and_floating_label_tracks_state() {
+    fn window_actions_are_available_and_floating_label_tracks_state() {
         let apps = vec![app("a.desktop", "A")];
         let history = History::default();
         let labels = |window: Window| {
@@ -814,7 +836,7 @@ mod tests {
                 window,
                 app: Some(0),
             }
-            .actions(&apps, &[], &history)
+            .actions(&apps, &[], &history, &Niri)
             .into_iter()
             .map(|a| a.label)
             .collect::<Vec<_>>()

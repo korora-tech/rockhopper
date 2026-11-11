@@ -15,6 +15,7 @@ let
   cfg = config.programs.rockhopper;
   yaml = pkgs.formats.yaml { };
   defaults = lib.importJSON ../src/defaults.json;
+  niriCommands = defaults.compositors.niri.commands;
 
   commandType = lib.types.submodule {
     options = {
@@ -38,7 +39,7 @@ let
           The program and its arguments. `{window_id}` is replaced by the id
           of the window that had focus when the launcher opened, or of the
           window chosen with `ctrl-k`; a command that uses it is listed only
-          when there is such a window (on niri).
+          when there is such a window (on niri and Umbriel).
         '';
       };
     };
@@ -121,7 +122,7 @@ in
       '';
       description = ''
         Commands listed in the launcher, by key. The built-in ones act on
-        the focused window through niri: ${lib.concatStringsSep ", " (lib.attrNames defaults.commands)}.
+        the focused window through niri: ${lib.concatStringsSep ", " (lib.attrNames niriCommands)}.
         Setting a field of one of them overrides just that field.
       '';
     };
@@ -141,7 +142,7 @@ in
 
   config = lib.mkIf cfg.enable {
     # The built-in commands, each field a default the user can override.
-    programs.rockhopper.commands = lib.mapAttrs (_: lib.mapAttrs (_: lib.mkDefault)) defaults.commands;
+    programs.rockhopper.commands = lib.mapAttrs (_: lib.mapAttrs (_: lib.mkDefault)) niriCommands;
 
     assertions = [
       {

@@ -150,7 +150,7 @@ impl Default for ClipboardConfig {
 pub struct System {
     /// Default: `loginctl lock-session`.
     pub lock: Option<Vec<String>>,
-    /// Default: niri's quit action, else `loginctl terminate-session`.
+    /// Default: the compositor's own quit action, else `loginctl terminate-session`.
     pub logout: Option<Vec<String>>,
 }
 

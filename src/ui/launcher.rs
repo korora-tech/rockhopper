@@ -22,12 +22,15 @@ use gpui_kit::{
 use crate::apps::{self, App as DesktopApp};
 use crate::clipboard::{Clip, Clipboard, ImageCapture};
 use crate::commands::{self, Command};
+use crate::compositor::{self, BuiltinCommand, Compositor, Op, Scope};
 use crate::config::{self, Config, ThemeChoice};
 use crate::emoji::{self, Emoji, EmojiFont};
 use crate::history::{self, History};
+use crate::icons;
 use crate::ipc::{Request, TestInput};
 use crate::items::{self, Action, Entry, Item};
-use crate::{icons, launch, niri};
+use crate::launch;
+use std::sync::Arc;
 
 /// gpui-kit wraps every window in a client-side frame: a 20px shadow gutter
 /// and a 1px border. GPUI reports layer surfaces as client-decorated, so the
@@ -38,17 +41,19 @@ pub struct Launcher {
     pub(super) config: Config,
     config_stamp: config::Stamp,
     pub(super) apps: Rc<Vec<DesktopApp>>,
-    /// Open windows, read from niri each time the launcher opens.
-    windows: Vec<niri::Window>,
+    /// Open windows, read from the compositor each time the launcher opens.
+    windows: Vec<compositor::Window>,
     /// Workspaces and outputs, snapshotted when the launcher opens.
-    pub(super) workspaces: Vec<niri::Workspace>,
-    pub(super) outputs: Vec<niri::Output>,
+    pub(super) workspaces: Vec<compositor::Workspace>,
+    pub(super) outputs: Vec<compositor::Output>,
     /// The workspace focused when the launcher opened.
-    focused_workspace: Option<u64>,
+    focused_workspace: Option<String>,
     /// The configured commands, built-in ones included.
     pub(super) commands: Rc<Vec<Command>>,
     /// Focus captured before the overlay receives keyboard focus.
-    focused_window: Option<niri::FocusedWindowSnapshot>,
+    focused_window: Option<compositor::FocusedWindow>,
+    /// The compositor the launcher is running under, detected on each open.
+    pub(super) compositor: Arc<dyn Compositor>,
     /// Everything searchable, rebuilt when apps or windows change.
     pub(super) entries: Rc<Vec<Entry>>,
     fingerprint: Vec<config::FileStamp>,
@@ -69,25 +74,28 @@ pub struct Launcher {
     view: Option<WeakEntity<view::LauncherView>>,
     opening: bool,
     hide_when_open: bool,
-    /// Last failed niri action, shown in the launcher.
+    /// Last failed compositor action, shown in the launcher.
     pub(super) action_error: Option<String>,
     /// A focus-dependent command held until this overlay is actually closed.
-    pending_niri_command: Option<PendingNiriCommand>,
+    pending_command: Option<PendingCommand>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct PendingNiriCommand {
+#[derive(Clone, Debug, PartialEq)]
+struct PendingCommand {
     overlay_window: WindowId,
-    command: niri::NiriCommand,
-    window_id: Option<u64>,
+    command: BuiltinCommand,
+    window_id: Option<compositor::WindowId>,
     is_floating: bool,
 }
 
 fn take_pending_for_closed_window(
-    pending: &mut Option<PendingNiriCommand>,
+    pending: &mut Option<PendingCommand>,
     closed_window: WindowId,
-) -> Option<PendingNiriCommand> {
-    if pending.is_some_and(|command| command.overlay_window == closed_window) {
+) -> Option<PendingCommand> {
+    if pending
+        .as_ref()
+        .is_some_and(|command| command.overlay_window == closed_window)
+    {
         pending.take()
     } else {
         None
@@ -95,13 +103,13 @@ fn take_pending_for_closed_window(
 }
 
 fn focused_window_for_open(
-    result: std::io::Result<Option<niri::FocusedWindowSnapshot>>,
-) -> (Option<niri::FocusedWindowSnapshot>, Option<String>) {
+    result: std::io::Result<Option<compositor::FocusedWindow>>,
+) -> (Option<compositor::FocusedWindow>, Option<String>) {
     match result {
         Ok(snapshot) => (snapshot, None),
         Err(err) => (
             None,
-            Some(format!("Could not read focused window from niri: {err}")),
+            Some(format!("Could not read the focused window: {err}")),
         ),
     }
 }
@@ -134,7 +142,8 @@ impl Launcher {
         });
         let clips = Rc::new(clipboard.as_ref().map(Clipboard::clips).unwrap_or_default());
         let emojis = Rc::new(emoji::all(config.emoji.skin_tone));
-        let commands = Rc::new(commands::resolve(&config.commands));
+        let compositor = compositor::detect();
+        let commands = Rc::new(commands::resolve(&config.commands, compositor.name()));
         let mut this = Self {
             config,
             config_stamp: config::stamp(),
@@ -159,7 +168,8 @@ impl Launcher {
             opening: false,
             hide_when_open: false,
             action_error: None,
-            pending_niri_command: None,
+            pending_command: None,
+            compositor,
         };
         this.refresh_index(cx);
         this.load_emoji_font(cx);
@@ -214,33 +224,29 @@ impl Launcher {
             self.config_stamp = stamp;
             let config = config::load();
             let emoji_changed = config.emoji != self.config.emoji;
-            self.commands = Rc::new(commands::resolve(&config.commands));
+            self.commands = Rc::new(commands::resolve(&config.commands, self.compositor.name()));
             self.config = config;
             if emoji_changed {
                 self.load_emoji_font(cx);
             }
         }
         self.refresh_index(cx);
-        self.focused_window = if niri::available() {
-            let (snapshot, error) = focused_window_for_open(niri::focused_window_snapshot());
-            if let Some(message) = error {
-                eprintln!("rockhopper: {message}");
-                self.action_error = Some(message);
-            }
-            snapshot
-        } else {
-            None
-        };
         // Read before the launcher takes keyboard focus, so the focused
         // window is the one window commands act on.
-        self.windows = niri::windows();
-        self.workspaces = niri::workspaces();
-        self.outputs = niri::outputs();
+        let (focused, error) = focused_window_for_open(self.compositor.focused_window());
+        if let Some(message) = error {
+            eprintln!("rockhopper: {message}");
+            self.action_error = Some(message);
+        }
+        self.focused_window = focused;
+        self.windows = self.compositor.windows();
+        self.workspaces = self.compositor.workspaces();
+        self.outputs = self.compositor.outputs();
         self.focused_workspace = self
             .workspaces
             .iter()
             .find(|workspace| workspace.is_focused)
-            .map(|workspace| workspace.id);
+            .map(|workspace| workspace.id.clone());
         self.rebuild_entries();
         match self.config.appearance.theme {
             ThemeChoice::System => Theme::sync_system_appearance(None, cx),
@@ -253,7 +259,11 @@ impl Launcher {
         // would let the compositor pick, so open at the output's size, grown
         // by the frame gpui-kit draws (see FRAME_INSET) and pulled back by
         // negative margins so the frame lies off-screen.
-        let display = target_display(self.config.appearance.output.as_deref(), cx);
+        let display = target_display(
+            self.config.appearance.output.as_deref(),
+            self.compositor.focused_output(),
+            cx,
+        );
         let output = display
             .as_ref()
             .map_or(size(px(1920.), px(1080.)), |d| d.bounds().size);
@@ -353,8 +363,8 @@ impl Launcher {
             &self.windows,
             &self.commands,
             self.clipboard.is_some(),
-            niri::available(),
-            self.focused_window,
+            self.compositor.as_ref(),
+            self.focused_window.clone(),
         ));
     }
 
@@ -449,20 +459,20 @@ impl Launcher {
         self.refresh_clips(cx);
     }
 
-    /// Run an niri command against the window captured when the launcher
-    /// opened. Focus-dependent commands wait until the overlay closes and
-    /// niri restores focus to that same window.
-    fn perform_niri_command(
+    /// Run a built-in command against the window captured when the launcher
+    /// opened. Focus-dependent commands wait until the overlay closes and the
+    /// compositor restores focus to that same window.
+    fn perform_builtin(
         &mut self,
-        command: niri::NiriCommand,
-        window_id: Option<u64>,
+        command: BuiltinCommand,
+        window_id: Option<compositor::WindowId>,
         is_floating: bool,
         cx: &mut Context<Self>,
     ) {
         self.action_error = None;
         let label = command.name(is_floating).to_owned();
-        if command.scope == niri::CommandScope::Window {
-            match command.perform(window_id) {
+        if command.scope == Scope::Window {
+            match self.compositor.run_builtin(command, window_id.as_deref()) {
                 Ok(()) => {
                     self.history.record(command.key, history::now());
                     self.hide(cx);
@@ -483,7 +493,7 @@ impl Launcher {
             cx.notify();
             return;
         };
-        self.pending_niri_command = Some(PendingNiriCommand {
+        self.pending_command = Some(PendingCommand {
             overlay_window: handle.window_id(),
             command,
             window_id,
@@ -492,27 +502,26 @@ impl Launcher {
         self.hide(cx);
     }
 
-    fn run_niri_command_after_overlay_closed(
-        &mut self,
-        pending: PendingNiriCommand,
-        cx: &mut Context<Self>,
-    ) {
-        let PendingNiriCommand {
+    fn run_pending_command(&mut self, pending: PendingCommand, cx: &mut Context<Self>) {
+        let PendingCommand {
             command,
             window_id,
             is_floating,
             ..
         } = pending;
         let label = command.name(is_floating).to_owned();
+        let compositor = self.compositor.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    if command.scope == niri::CommandScope::Focused {
+                    if command.scope == Scope::Focused {
                         let expected = window_id.ok_or_else(|| {
                             std::io::Error::other("no focused window was captured")
                         })?;
                         let deadline = Instant::now() + Duration::from_secs(1);
-                        while niri::focused_window_id()? != Some(expected) {
+                        while compositor.focused_window()?.map(|window| window.id)
+                            != Some(expected.clone())
+                        {
                             if Instant::now() >= deadline {
                                 return Err(std::io::Error::other(
                                     "focus did not return to the captured window; command was not sent",
@@ -521,7 +530,7 @@ impl Launcher {
                             std::thread::sleep(Duration::from_millis(20));
                         }
                     }
-                    command.perform(None)
+                    compositor.run_builtin(command, None)
                 })
                 .await;
             match result {
@@ -544,7 +553,7 @@ impl Launcher {
     /// that change the list in place leave it open.
     pub(super) fn perform(&mut self, item: &Item, action: Action, cx: &mut Context<Self>) {
         if let (
-            Item::NiriCommand {
+            Item::Builtin {
                 command,
                 window_id,
                 is_floating,
@@ -552,7 +561,7 @@ impl Launcher {
             Action::Primary,
         ) = (item, action)
         {
-            self.perform_niri_command(*command, *window_id, *is_floating, cx);
+            self.perform_builtin(*command, window_id.clone(), *is_floating, cx);
             return;
         }
         let result = match (item, action) {
@@ -569,7 +578,7 @@ impl Launcher {
                     policy,
                     items::AppLaunchIntent::Default,
                 ) {
-                    items::AppOpen::FocusWindow(id) => niri::focus_window(id),
+                    items::AppOpen::FocusWindow(id) => self.compositor.focus_window(&id),
                     items::AppOpen::Launch => launch::launch(app, &self.config),
                 }
             }
@@ -586,14 +595,16 @@ impl Launcher {
                 cx.write_to_clipboard(ClipboardItem::new_string(self.apps[*i].argv.join(" ")));
                 Ok(())
             }
-            (Item::Window { window, .. }, Action::Primary) => niri::focus_window(window.id),
+            (Item::Window { window, .. }, Action::Primary) => {
+                self.compositor.focus_window(&window.id)
+            }
             (Item::Window { app: Some(a), .. }, Action::NewInstance) => {
                 let app = &self.apps[*a];
                 launch::launch(app, &self.config)
                     .inspect(|()| self.history.record(&app.id, history::now()))
             }
             (Item::Window { window, .. }, Action::CloseWindow) => {
-                let closed = niri::close_window(window.id);
+                let closed = self.compositor.close_window(&window.id);
                 if closed.is_ok() {
                     self.windows.retain(|w| w.id != window.id);
                     self.rebuild_entries();
@@ -607,42 +618,45 @@ impl Launcher {
                 Ok(())
             }
             (Item::Window { window, .. }, Action::ToggleFullscreen) => {
-                niri::perform_window_action(window.id, niri::WindowAction::ToggleFullscreen)
+                self.compositor.window_op(&window.id, Op::ToggleFullscreen)
             }
-            (Item::Window { window, .. }, Action::ToggleWindowedFullscreen) => {
-                niri::perform_window_action(window.id, niri::WindowAction::ToggleWindowedFullscreen)
-            }
+            (Item::Window { window, .. }, Action::ToggleWindowedFullscreen) => self
+                .compositor
+                .window_op(&window.id, Op::ToggleWindowedFullscreen),
             (Item::Window { window, .. }, Action::ToggleFloating) => {
-                niri::perform_window_action(window.id, niri::WindowAction::ToggleFloating)
+                self.compositor.window_op(&window.id, Op::ToggleFloating)
             }
             (Item::Window { window, .. }, Action::CenterWindow) => {
-                niri::perform_window_action(window.id, niri::WindowAction::Center)
+                self.compositor.window_op(&window.id, Op::Center)
             }
-            (Item::Window { window, .. }, Action::SetWidthThird) => {
-                niri::perform_window_action(window.id, niri::WindowAction::SetWidth(1.0 / 3.0))
-            }
+            (Item::Window { window, .. }, Action::SetWidthThird) => self
+                .compositor
+                .window_op(&window.id, Op::SetWidth(1.0 / 3.0)),
             (Item::Window { window, .. }, Action::SetWidthHalf) => {
-                niri::perform_window_action(window.id, niri::WindowAction::SetWidth(0.5))
+                self.compositor.window_op(&window.id, Op::SetWidth(0.5))
             }
-            (Item::Window { window, .. }, Action::SetWidthTwoThirds) => {
-                niri::perform_window_action(window.id, niri::WindowAction::SetWidth(2.0 / 3.0))
-            }
+            (Item::Window { window, .. }, Action::SetWidthTwoThirds) => self
+                .compositor
+                .window_op(&window.id, Op::SetWidth(2.0 / 3.0)),
             (Item::Window { window, .. }, Action::SetWidthFull) => {
-                niri::perform_window_action(window.id, niri::WindowAction::SetWidth(1.0))
+                self.compositor.window_op(&window.id, Op::SetWidth(1.0))
             }
             (Item::Window { window, .. }, Action::BringToThisWorkspace) => {
-                self.focused_workspace.map_or_else(
+                self.focused_workspace.clone().map_or_else(
                     || Err(std::io::Error::other("no focused workspace was recorded")),
-                    |workspace| niri::move_window_to_workspace(window.id, workspace),
+                    |workspace| {
+                        self.compositor
+                            .move_window_to_workspace(&window.id, &workspace)
+                    },
                 )
             }
             (Item::Window { .. }, Action::MoveToWorkspace | Action::MoveToMonitor) => Err(
                 std::io::Error::other("choose a workspace or monitor from its picker"),
             ),
             (Item::Window { window, .. }, Action::ScreenshotWindow) => {
-                niri::perform_window_action(window.id, niri::WindowAction::Screenshot)
+                self.compositor.window_op(&window.id, Op::Screenshot)
             }
-            (Item::System(cmd), Action::Primary) => cmd.run(&self.config),
+            (Item::System(cmd), Action::Primary) => cmd.run(&self.config, self.compositor.as_ref()),
             (
                 Item::Command {
                     command, window, ..
@@ -715,7 +729,7 @@ impl Launcher {
     fn run_command(
         &mut self,
         command: &Command,
-        window: Option<&niri::Window>,
+        window: Option<&compositor::Window>,
         cx: &mut Context<Self>,
     ) {
         let Some(argv) = command.argv(window) else {
@@ -782,8 +796,12 @@ fn report(result: std::io::Result<()>, item: &Item, apps: &[DesktopApp]) {
     }
 }
 
-/// The configured output, else the one niri says has focus, else the primary.
-fn target_display(configured: Option<&str>, cx: &gpui_kit::App) -> Option<Rc<dyn PlatformDisplay>> {
+/// The configured output, else the one the compositor says has focus, else the primary.
+fn target_display(
+    configured: Option<&str>,
+    focused: Option<String>,
+    cx: &gpui_kit::App,
+) -> Option<Rc<dyn PlatformDisplay>> {
     let by_name = |name: String| {
         let uuid = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_DNS, name.as_bytes());
         cx.displays()
@@ -793,7 +811,7 @@ fn target_display(configured: Option<&str>, cx: &gpui_kit::App) -> Option<Rc<dyn
     configured
         .map(str::to_owned)
         .and_then(by_name)
-        .or_else(|| niri::focused_output().and_then(by_name))
+        .or_else(|| focused.and_then(by_name))
         .or_else(|| cx.primary_display())
 }
 
@@ -804,10 +822,8 @@ fn observe_window_closed_by_id(cx: &mut Context<Launcher>) {
             if this.window.is_some_and(|w| w.window_id() == id) {
                 this.window = None;
             }
-            if let Some(pending) =
-                take_pending_for_closed_window(&mut this.pending_niri_command, id)
-            {
-                this.run_niri_command_after_overlay_closed(pending, cx);
+            if let Some(pending) = take_pending_for_closed_window(&mut this.pending_command, id) {
+                this.run_pending_command(pending, cx);
             }
         });
     })
@@ -816,38 +832,39 @@ fn observe_window_closed_by_id(cx: &mut Context<Launcher>) {
 
 #[cfg(test)]
 mod searchable_command_tests {
-    use super::{PendingNiriCommand, focused_window_for_open, take_pending_for_closed_window};
-    use crate::niri;
+    use super::{PendingCommand, focused_window_for_open, take_pending_for_closed_window};
+    use crate::compositor::niri::BUILTIN_COMMANDS;
+    use crate::compositor::{BuiltinCommand, Scope};
     use gpui_kit::WindowId;
 
     #[test]
-    fn failed_initial_niri_snapshot_becomes_a_launcher_error() {
+    fn failed_initial_focus_read_becomes_a_launcher_error() {
         let (snapshot, error) =
-            focused_window_for_open(Err(std::io::Error::other("niri socket unavailable")));
+            focused_window_for_open(Err(std::io::Error::other("compositor socket unavailable")));
 
         assert_eq!(snapshot, None);
         assert_eq!(
             error.as_deref(),
-            Some("Could not read focused window from niri: niri socket unavailable")
+            Some("Could not read the focused window: compositor socket unavailable")
         );
     }
 
     #[test]
     fn focus_dependent_commands_wait_for_their_overlay_close_event() {
-        let command = *niri::NIRI_COMMANDS
+        let command: BuiltinCommand = *BUILTIN_COMMANDS
             .iter()
-            .find(|command| command.scope == niri::CommandScope::Focused)
+            .find(|command| command.scope == Scope::Focused)
             .unwrap();
-        let pending = PendingNiriCommand {
+        let pending = PendingCommand {
             overlay_window: WindowId::from(11),
             command,
-            window_id: Some(41),
+            window_id: Some("41".into()),
             is_floating: false,
         };
-        let mut queued = Some(pending);
+        let mut queued = Some(pending.clone());
 
         assert!(take_pending_for_closed_window(&mut queued, WindowId::from(12)).is_none());
-        assert_eq!(queued, Some(pending));
+        assert_eq!(queued, Some(pending.clone()));
         assert_eq!(
             take_pending_for_closed_window(&mut queued, WindowId::from(11)),
             Some(pending)
