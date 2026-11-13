@@ -16,7 +16,8 @@ gpui_kit::assets::icon_assets!(
         ClipboardList,
         Type,
         Image,
-        FaceSlightlySmiling
+        FaceSlightlySmiling,
+        Server
     ]
 );
 

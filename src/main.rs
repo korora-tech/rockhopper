@@ -14,6 +14,7 @@ mod launch;
 mod search;
 mod syscalls;
 mod system;
+mod systemd;
 mod ui;
 
 use gpui_kit::{AppContext as _, QuitMode};
