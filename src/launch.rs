@@ -21,26 +21,7 @@ pub fn command_line(
 ) -> Vec<String> {
     let mut argv = Vec::new();
     if config.launch.systemd_scope && systemd_run == SystemdRunAvailability::Available {
-        // Unit names follow the XDG convention for launched apps:
-        // app-<launcher>-<application id>-<random>.scope
-        argv.extend(
-            [
-                "systemd-run",
-                "--user",
-                "--scope",
-                "--quiet",
-                "--collect",
-                "--same-dir",
-            ]
-            .map(String::from),
-        );
-        argv.push(format!(
-            "--unit=app-rockhopper-{}-{}",
-            unit_id(&app.id),
-            nonce()
-        ));
-        argv.push(format!("--description={}", app.name));
-        argv.push("--".into());
+        argv.extend(scope_prefix(&unit_id(&app.id), &app.name));
     }
     if app.terminal {
         argv.extend(config.terminal.iter().cloned());
@@ -61,18 +42,39 @@ pub fn launch_argv(app: &App, argv: &[String], config: &Config) -> std::io::Resu
     };
     let app = &app;
     let argv = command_line(app, config, has_systemd_run());
+    spawn_detached(&argv, app.cwd.as_deref())
+}
+
+/// Start `argv` detached, in its own systemd scope named for `id` when
+/// scopes are available and enabled.
+pub fn run_scoped(
+    argv: &[String],
+    id: &str,
+    description: &str,
+    config: &Config,
+) -> std::io::Result<()> {
+    let mut full = Vec::new();
+    if config.launch.systemd_scope && has_systemd_run() == SystemdRunAvailability::Available {
+        full.extend(scope_prefix(&unit_id(id), description));
+    }
+    full.extend(argv.iter().cloned());
+    spawn_detached(&full, None)
+}
+
+/// Run `argv` in its own session, from `cwd` (else the home directory), with
+/// no standard streams.
+fn spawn_detached(argv: &[String], cwd: Option<&std::path::Path>) -> std::io::Result<()> {
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let home = std::env::var_os("HOME");
-    match app.cwd.as_ref().filter(|d| d.is_dir()) {
+    match cwd.filter(|dir| dir.is_dir()) {
         Some(dir) => {
             cmd.current_dir(dir);
         }
         None => {
-            if let Some(home) = home {
+            if let Some(home) = std::env::var_os("HOME") {
                 cmd.current_dir(home);
             }
         }
@@ -86,6 +88,26 @@ pub fn launch_argv(app: &App, argv: &[String], config: &Config) -> std::io::Resu
     // Reap it so it never lingers as a zombie of the daemon.
     std::thread::spawn(move || child.wait());
     Ok(())
+}
+
+/// `systemd-run` arguments that start a command in its own user scope. Unit
+/// names follow the XDG convention for launched apps:
+/// `app-<launcher>-<id>-<random>.scope`.
+fn scope_prefix(id: &str, description: &str) -> Vec<String> {
+    let mut argv: Vec<String> = [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        "--same-dir",
+    ]
+    .map(String::from)
+    .into();
+    argv.push(format!("--unit=app-rockhopper-{id}-{}", nonce()));
+    argv.push(format!("--description={description}"));
+    argv.push("--".into());
+    argv
 }
 
 fn has_systemd_run() -> SystemdRunAvailability {

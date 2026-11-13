@@ -11,6 +11,7 @@ mod icons;
 mod ipc;
 mod items;
 mod launch;
+mod nix;
 mod search;
 mod syscalls;
 mod system;

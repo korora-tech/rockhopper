@@ -20,6 +20,7 @@ use gpui_kit::{
     uniform_list, white,
 };
 
+use super::launcher::NixStatus;
 use super::{Launcher, Start};
 use crate::apps::App as DesktopApp;
 use crate::clipboard::{Clip, Content};
@@ -65,6 +66,7 @@ const APPS_PLACEHOLDER: &str = "Search apps…";
 const WINDOWS_PLACEHOLDER: &str = "Search windows…";
 const COMMANDS_PLACEHOLDER: &str = "Search commands…";
 const SERVICES_PLACEHOLDER: &str = "Search services…";
+const NIX_PLACEHOLDER: &str = "Search nixpkgs…";
 
 actions!(
     rockhopper,
@@ -131,6 +133,8 @@ enum Mode {
     Clipboard,
     /// Results index the launcher's emoji, shown as a grid.
     Emoji,
+    /// Results index the launcher's nixpkgs packages.
+    Nix,
 }
 
 impl From<Scope> for Mode {
@@ -142,6 +146,7 @@ impl From<Scope> for Mode {
             Scope::Emoji => Self::Emoji,
             Scope::Clipboard => Self::Clipboard,
             Scope::Services => Self::Only(Kind::Service),
+            Scope::Nix => Self::Nix,
         }
     }
 }
@@ -154,6 +159,10 @@ enum MenuAction {
     DeleteAllClips,
     CopyEmoji,
     CopyShortcode,
+    NixRun,
+    NixRunInTerminal,
+    NixCopyCommand,
+    NixCopyAttr,
 }
 
 impl MenuAction {
@@ -165,6 +174,10 @@ impl MenuAction {
             Self::DeleteAllClips => "Delete All Entries".into(),
             Self::CopyEmoji => "Copy Emoji".into(),
             Self::CopyShortcode => "Copy Shortcode".into(),
+            Self::NixRun => "Run".into(),
+            Self::NixRunInTerminal => "Run in Terminal".into(),
+            Self::NixCopyCommand => "Copy Run Command".into(),
+            Self::NixCopyAttr => "Copy Attribute".into(),
         }
     }
 }
@@ -335,6 +348,7 @@ impl LauncherView {
             Mode::Only(Kind::Service) => SERVICES_PLACEHOLDER,
             Mode::Clipboard => CLIPBOARD_PLACEHOLDER,
             Mode::Emoji => EMOJI_PLACEHOLDER,
+            Mode::Nix => NIX_PLACEHOLDER,
         };
         self.input.update(cx, |input, cx| {
             input.set_value(query.clone(), window, cx);
@@ -360,6 +374,9 @@ impl LauncherView {
             return false;
         }
         if scope == Scope::Services && !launcher.config.systemd.enabled {
+            return false;
+        }
+        if scope == Scope::Nix && !launcher.config.nix.enabled {
             return false;
         }
         let (mode, rest) = (Mode::from(scope), rest.to_owned());
@@ -425,6 +442,17 @@ impl LauncherView {
                 let candidates: Vec<_> = launcher.clips.iter().map(clip_candidate).collect();
                 self.ranker
                     .rank(&candidates, &launcher.history, &self.query, history::now())
+            }
+            Mode::Nix if self.query.trim().is_empty() => Vec::new(),
+            Mode::Nix => {
+                let mut ranked = self.ranker.rank(
+                    &launcher.nix_candidates,
+                    &launcher.history,
+                    &self.query,
+                    history::now(),
+                );
+                ranked.truncate(MAX_RESULTS);
+                ranked
             }
             Mode::Emoji if self.query.trim().is_empty() => {
                 frequent_first(&launcher.emojis, &launcher.history)
@@ -567,6 +595,7 @@ impl LauncherView {
                 }),
                 Mode::Clipboard => MenuAction::CopyClip,
                 Mode::Emoji => MenuAction::CopyEmoji,
+                Mode::Nix => MenuAction::NixRun,
             };
             self.run(target, action, window, cx);
         }
@@ -696,6 +725,22 @@ impl LauncherView {
                 };
                 self.launcher
                     .update(cx, |l, cx| l.copy_text(&text, Some(emoji.key()), cx));
+            }
+            MenuAction::NixRun | MenuAction::NixRunInTerminal => {
+                let attr = launcher.nix_packages[target].attr.clone();
+                let in_terminal = action == MenuAction::NixRunInTerminal;
+                self.launcher
+                    .update(cx, |l, cx| l.run_nix(&attr, in_terminal, cx));
+            }
+            MenuAction::NixCopyCommand | MenuAction::NixCopyAttr => {
+                let attr = launcher.nix_packages[target].attr.clone();
+                let text = if action == MenuAction::NixCopyCommand {
+                    crate::nix::run_command(&launcher.config.nix.flake, &attr).join(" ")
+                } else {
+                    attr
+                };
+                self.launcher
+                    .update(cx, |l, cx| l.copy_text(&text, None, cx));
             }
             MenuAction::DeleteAllClips => {
                 if !self.confirm(Confirm::DeleteAllClips, cx) {
@@ -862,6 +907,15 @@ impl LauncherView {
                     }
                     (title_case(emoji.name), actions)
                 }
+                Mode::Nix => (
+                    launcher.nix_packages[target].attr.clone(),
+                    vec![
+                        MenuAction::NixRun,
+                        MenuAction::NixRunInTerminal,
+                        MenuAction::NixCopyCommand,
+                        MenuAction::NixCopyAttr,
+                    ],
+                ),
             };
             self.menu = Some(Menu {
                 target,
@@ -965,6 +1019,39 @@ impl LauncherView {
                 &theme,
             ))
             .child(kind_label(item.kind(apps), &theme))
+            .into_any_element()
+    }
+
+    fn render_nix_row(
+        &self,
+        ix: usize,
+        packages: &[crate::nix::Package],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let package = &packages[self.results[ix]];
+        let theme = cx.theme().clone();
+        let subtitle = match (&package.main_program, package.description.as_str()) {
+            (Some(program), "") => Some(format!("Runs {program}")),
+            (Some(program), description) => Some(format!("{description} · runs {program}")),
+            (None, "") => None,
+            (None, description) => Some(description.to_owned()),
+        };
+        self.row(ix, &theme, cx)
+            .child(item_icon(ItemIcon::Symbol(Symbol::Package), &theme))
+            .child(row_text(
+                package.attr.clone(),
+                subtitle,
+                RowTextStyle {
+                    subtitle: SubtitleTone::Normal,
+                    selection: if ix == self.selected {
+                        Selection::Selected
+                    } else {
+                        Selection::Unselected
+                    },
+                },
+                &theme,
+            ))
+            .child(kind_label("Package", &theme))
             .into_any_element()
     }
 
@@ -1304,6 +1391,8 @@ impl Render for LauncherView {
         let entries = launcher.entries.clone();
         let clips = launcher.clips.clone();
         let emojis = launcher.emojis.clone();
+        let nix_packages = launcher.nix_packages.clone();
+        let nix_status = launcher.nix_status.clone();
         let appearance = launcher.config.appearance.clone();
         let indexing = launcher.indexing && apps.is_empty();
         let action_error = launcher.action_error.clone();
@@ -1311,6 +1400,7 @@ impl Render for LauncherView {
         let viewport = window.viewport_size();
         let clipboard = self.mode == Mode::Clipboard;
         let emoji = self.mode == Mode::Emoji;
+        let nix = self.mode == Mode::Nix;
         let wanted = if clipboard {
             appearance.width.max(CLIPBOARD_MIN_WIDTH)
         } else {
@@ -1331,6 +1421,7 @@ impl Render for LauncherView {
             Mode::Only(Kind::Service) => Some("Services"),
             Mode::Clipboard => Some("Clipboard"),
             Mode::Emoji => Some("Emoji"),
+            Mode::Nix => Some("Nix"),
         };
 
         let search = h_flex()
@@ -1368,7 +1459,7 @@ impl Render for LauncherView {
                 ),
             );
 
-        let message = |text: &'static str| {
+        let message = |text: String| {
             div()
                 .py_6()
                 .w_full()
@@ -1416,13 +1507,29 @@ impl Render for LauncherView {
                     .into_any_element(),
             )
         } else if self.results.is_empty() {
-            Some(message(match (clipboard, indexing) {
-                (true, _) if clips.is_empty() => "Nothing copied yet",
-                (false, true) => "Indexing apps…",
-                _ => "No matches",
+            Some(message(if nix {
+                nix_message(&nix_status, nix_packages.is_empty(), searching)
+            } else {
+                match (clipboard, indexing) {
+                    (true, _) if clips.is_empty() => "Nothing copied yet",
+                    (false, true) => "Indexing apps…",
+                    _ => "No matches",
+                }
+                .to_owned()
             }))
         } else {
-            let list = if clipboard {
+            let list = if nix {
+                let row_packages = nix_packages.clone();
+                uniform_list(
+                    "results",
+                    self.results.len(),
+                    cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
+                        range
+                            .map(|ix| this.render_nix_row(ix, &row_packages, cx))
+                            .collect()
+                    }),
+                )
+            } else if clipboard {
                 let row_clips = clips.clone();
                 uniform_list(
                     "results",
@@ -1475,6 +1582,7 @@ impl Render for LauncherView {
                 .get(self.selected)
                 .map(|&e| entries[e].item.verb()),
             Mode::Clipboard | Mode::Emoji => self.results.get(self.selected).map(|_| "Copy"),
+            Mode::Nix => self.results.get(self.selected).map(|_| "Run"),
         };
         let footer_new_instance = self.mode == Mode::Search
             && self.results.get(self.selected).is_some_and(|&e| {
@@ -1599,6 +1707,17 @@ impl Render for LauncherView {
                 launcher.update(cx, |l, cx| l.hide(cx));
             })
             .child(panel)
+    }
+}
+
+/// What to say when `nix ` lists nothing.
+fn nix_message(status: &NixStatus, no_packages: bool, searching: bool) -> String {
+    match status {
+        NixStatus::Downloading if no_packages => "Downloading the nixpkgs package list…".into(),
+        NixStatus::Failed(error) if no_packages => format!("Could not fetch packages: {error}"),
+        _ if no_packages => "No package list yet".into(),
+        _ if searching => "No matching packages".into(),
+        _ => "Type a package name to run it with nix run".into(),
     }
 }
 
@@ -1828,6 +1947,7 @@ fn item_icon(icon: ItemIcon, theme: &Theme) -> AnyElement {
                 Symbol::Text => Lucide::Type,
                 Symbol::Image => Lucide::Image,
                 Symbol::Service => Lucide::Server,
+                Symbol::Package => Lucide::Package,
             };
             div()
                 .size(size)
@@ -1874,7 +1994,7 @@ fn footer(verb: &str, new_instance: bool, menu_open: bool, theme: &Theme) -> Any
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings in GPUI's `test` macro, shadowing Rust's.
-    use super::{frequent_first, key, test_action, title_case};
+    use super::{NixStatus, frequent_first, key, nix_message, test_action, title_case};
     use crate::emoji::{self, SkinTone};
     use crate::history::{self, History};
 
@@ -1908,5 +2028,28 @@ mod tests {
     fn titles() {
         assert_eq!(title_case("party popper"), "Party Popper");
         assert_eq!(title_case("flag: United Kingdom"), "Flag: United Kingdom");
+    }
+
+    #[test]
+    fn nix_messages_follow_the_package_list() {
+        let failed = NixStatus::Failed("offline".into());
+        assert_eq!(
+            nix_message(&NixStatus::Downloading, true, false),
+            "Downloading the nixpkgs package list…"
+        );
+        assert_eq!(
+            nix_message(&failed, true, true),
+            "Could not fetch packages: offline"
+        );
+        assert_eq!(
+            nix_message(&NixStatus::Ready, true, false),
+            "No package list yet"
+        );
+        // A list from an earlier day is still searched when a refresh fails.
+        assert_eq!(nix_message(&failed, false, true), "No matching packages");
+        assert_eq!(
+            nix_message(&NixStatus::Ready, false, false),
+            "Type a package name to run it with nix run"
+        );
     }
 }

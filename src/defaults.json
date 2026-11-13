@@ -5,7 +5,8 @@
     "commands": ">",
     "emoji": "e ",
     "clipboard": null,
-    "services": "svc "
+    "services": "svc ",
+    "nix": "nix "
   },
   "compositors": {
     "niri": {

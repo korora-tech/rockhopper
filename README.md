@@ -102,6 +102,7 @@ Typing a prefix at the start of the search narrows it to one kind of result. The
 | `windows` | off |
 | `clipboard`: the clipboard history | off |
 | `services`: systemd services | `svc ` |
+| `nix`: nixpkgs packages to run | `nix ` |
 
 A prefix that is a letter needs something after it, such as the space in `e `, so that searching for apps that start with `e` still works. Set prefixes under `prefixes` in the config. The longest matching prefix wins, so `>` and `>>` can both be used.
 
@@ -130,6 +131,14 @@ Ranking is fuzzy, using the [nucleo](https://github.com/helix-editor/nucleo) mat
 `svc ` then a name lists your systemd user services: failed ones first, then running, then stopped. Services never appear in the main search, since there are too many. `enter` stops a running service or starts a stopped one. `ctrl-k` also offers Restart, Show Logs (follows the journal in your `terminal`) and Copy Unit Name. The list is read from `systemctl` each time the launcher opens, and an error from `systemctl` shows in the launcher.
 
 Set `systemd.system: true` to list system services too. Changing those asks for authorization through polkit, so a polkit agent must be running, and stopping or restarting one needs a second `enter`.
+
+## Nix
+
+`nix ` then a name searches nixpkgs and runs the package with `nix run <flake>#<package>`, without installing it. Names match on the attribute and on the program it runs (`rg` finds `ripgrep`), and on the description. `enter` runs it detached, in its own systemd scope when available. `ctrl-k` also offers Run in Terminal (for programs that need one), Copy Run Command and Copy Attribute. Packages you run rise in the results. The first run of a package can take a while to download or build, with nothing shown; a failure goes to the journal.
+
+The list is nixpkgs' own `packages.json`, downloaded for the configured channel once a day (about 10 MB) and kept in `$XDG_CACHE_HOME/rockhopper/nixpkgs-<channel>.tsv`. It leaves out broken packages and libraries nested in package sets, so about 34,000 packages are searched. The mode appears only when `nix` is on the `PATH`. If a download fails, the last list is kept and the download is retried at the next opening after an hour.
+
+Set `nix.flake` to the reference `nix run` should use, such as one you pin in your flake registry, so that what runs matches the list.
 
 ## Apps
 
@@ -178,6 +187,10 @@ icon_theme: Papirus-Dark
 system:
   lock: [loginctl, lock-session]     # replace the Lock Screen command
   logout: [niri, msg, action, quit]  # replace the Log Out command
+nix:
+  enabled: true      # offer the nix prefix; needs nix on the PATH
+  channel: nixos-unstable   # whose package list is downloaded daily
+  flake: nixpkgs     # what packages run from: <flake>#<package>
 systemd:
   enabled: true      # list services under the services prefix
   system: false      # also list system services
@@ -195,6 +208,7 @@ prefixes:            # null turns one off
   windows: "w "
   clipboard: null
   services: "svc "
+  nix: "nix "
 commands:            # merged with the built-in ones by key
   niri-fullscreen:
     keywords: [big]  # override one field of a built-in command
