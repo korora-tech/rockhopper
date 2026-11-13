@@ -30,6 +30,8 @@ use crate::icons;
 use crate::ipc::{Request, TestInput};
 use crate::items::{self, Action, Entry, Item};
 use crate::launch;
+use crate::nix;
+use crate::search::Candidate;
 use crate::systemd::{self, Unit};
 use std::sync::Arc;
 
@@ -57,6 +59,16 @@ pub struct Launcher {
     pub(super) compositor: Arc<dyn Compositor>,
     /// systemd services, listed again each time the launcher opens.
     units: Vec<Unit>,
+    /// The nixpkgs packages `nix ` searches, from the daily download.
+    pub(super) nix_packages: Rc<Vec<nix::Package>>,
+    /// What the ranker matches, parallel to `nix_packages`.
+    pub(super) nix_candidates: Rc<Vec<Candidate>>,
+    pub(super) nix_status: NixStatus,
+    /// The cache file `nix_packages` came from.
+    nix_cache: Option<std::path::PathBuf>,
+    /// When the list was last fetched, so a failure is not retried on every
+    /// opening.
+    nix_attempt: Option<Instant>,
     /// Everything searchable, rebuilt when apps or windows change.
     pub(super) entries: Rc<Vec<Entry>>,
     fingerprint: Vec<config::FileStamp>,
@@ -158,6 +170,11 @@ impl Launcher {
             commands,
             focused_window: None,
             units: Vec::new(),
+            nix_packages: Rc::new(Vec::new()),
+            nix_candidates: Rc::new(Vec::new()),
+            nix_status: NixStatus::Ready,
+            nix_cache: None,
+            nix_attempt: None,
             entries: Rc::new(Vec::new()),
             fingerprint: Vec::new(),
             indexing: false,
@@ -253,6 +270,7 @@ impl Launcher {
             .map(|workspace| workspace.id.clone());
         self.rebuild_entries();
         self.refresh_units(cx);
+        self.refresh_nix(cx);
         match self.config.appearance.theme {
             ThemeChoice::System => Theme::sync_system_appearance(None, cx),
             ThemeChoice::Light => Theme::change(ThemeMode::Light, None, cx),
@@ -413,6 +431,117 @@ impl Launcher {
             });
         })
         .detach();
+    }
+
+    /// Read the cached package list, and fetch a new one when it is more than
+    /// a day old. Both happen in the background.
+    fn refresh_nix(&mut self, cx: &mut Context<Self>) {
+        if !self.config.nix.enabled || !nix::is_installed() {
+            return;
+        }
+        let channel = self.config.nix.channel.clone();
+        let path = nix::cache_path(&channel);
+        let load = self.nix_cache.as_ref() != Some(&path);
+        let fetch = nix::is_stale(&path, std::time::SystemTime::now())
+            && self.nix_status != NixStatus::Downloading
+            && self
+                .nix_attempt
+                .is_none_or(|at| at.elapsed() >= NIX_RETRY_AFTER);
+        if !load && !fetch {
+            return;
+        }
+        if load {
+            self.nix_cache = Some(path.clone());
+            self.set_nix_packages(Vec::new());
+        }
+        if fetch {
+            self.nix_attempt = Some(Instant::now());
+            self.nix_status = NixStatus::Downloading;
+        }
+        cx.spawn(async move |this, cx| {
+            if load {
+                let from = path.clone();
+                if let Ok(packages) = cx.background_spawn(async move { nix::load(&from) }).await {
+                    _ = this.update(cx, |this, cx| {
+                        this.set_nix_packages(packages);
+                        cx.notify();
+                    });
+                }
+            }
+            if !fetch {
+                return;
+            }
+            let to = path.clone();
+            let fetched = cx
+                .background_spawn(async move { nix::refresh(&channel, &to) })
+                .await;
+            let packages = match &fetched {
+                Ok(()) => cx
+                    .background_spawn(async move { nix::load(&path) })
+                    .await
+                    .ok(),
+                Err(_) => None,
+            };
+            _ = this.update(cx, |this, cx| {
+                match fetched {
+                    Ok(()) => this.nix_status = NixStatus::Ready,
+                    Err(err) => {
+                        eprintln!("rockhopper: nix package list: {err}");
+                        this.nix_status = NixStatus::Failed(err.to_string());
+                    }
+                }
+                if let Some(packages) = packages {
+                    this.set_nix_packages(packages);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn set_nix_packages(&mut self, packages: Vec<nix::Package>) {
+        self.nix_candidates = Rc::new(
+            packages
+                .iter()
+                .map(|package| Candidate {
+                    name: package.attr.clone(),
+                    secondary: package
+                        .main_program
+                        .iter()
+                        .chain((!package.description.is_empty()).then_some(&package.description))
+                        .cloned()
+                        .collect(),
+                    key: Some(nix_history_key(&package.attr)),
+                })
+                .collect(),
+        );
+        self.nix_packages = Rc::new(packages);
+    }
+
+    /// Run a package with `nix run`, in a terminal when asked, and close.
+    /// What it prints is not shown; a failure shows in the journal.
+    pub(super) fn run_nix(&mut self, attr: &str, in_terminal: bool, cx: &mut Context<Self>) {
+        let command = nix::run_command(&self.config.nix.flake, attr);
+        let argv: Vec<String> = if in_terminal {
+            self.config
+                .terminal
+                .iter()
+                .cloned()
+                .chain(command)
+                .collect()
+        } else {
+            command
+        };
+        let result = launch::run_scoped(
+            &argv,
+            &format!("nix-{attr}"),
+            &format!("nix run {attr}"),
+            &self.config,
+        );
+        if result.is_ok() {
+            self.history.record(&nix_history_key(attr), history::now());
+        }
+        self.finish_window_action(result, &format!("nix run {attr}"), cx);
     }
 
     /// Run `op` on `unit`, keeping the launcher open until systemd answers so
@@ -866,6 +995,21 @@ impl Launcher {
         })
         .detach();
     }
+}
+
+/// How the nixpkgs package list stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NixStatus {
+    Ready,
+    Downloading,
+    Failed(String),
+}
+
+/// A failed download is not tried again for this long.
+const NIX_RETRY_AFTER: Duration = Duration::from_secs(60 * 60);
+
+pub(super) fn nix_history_key(attr: &str) -> String {
+    format!("nix:{attr}")
 }
 
 /// Where a window opens.

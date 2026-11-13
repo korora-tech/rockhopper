@@ -23,6 +23,7 @@ pub struct Config {
     pub clipboard: ClipboardConfig,
     pub emoji: EmojiConfig,
     pub systemd: SystemdConfig,
+    pub nix: NixConfig,
     /// Text that, typed first, narrows the search to one kind of result.
     pub prefixes: Prefixes,
     /// Commands by key, laid over the built-in ones.
@@ -38,6 +39,7 @@ pub enum Scope {
     Emoji,
     Clipboard,
     Services,
+    Nix,
 }
 
 /// A prefix per scope; `None` or empty turns it off. The defaults are in
@@ -51,6 +53,7 @@ pub struct Prefixes {
     pub emoji: Option<String>,
     pub clipboard: Option<String>,
     pub services: Option<String>,
+    pub nix: Option<String>,
 }
 
 impl Default for Prefixes {
@@ -64,6 +67,7 @@ impl Default for Prefixes {
             emoji: Option<String>,
             clipboard: Option<String>,
             services: Option<String>,
+            nix: Option<String>,
         }
         #[derive(Deserialize)]
         struct Defaults {
@@ -79,6 +83,7 @@ impl Default for Prefixes {
             emoji: p.emoji,
             clipboard: p.clipboard,
             services: p.services,
+            nix: p.nix,
         }
     }
 }
@@ -94,6 +99,7 @@ impl Prefixes {
             (Scope::Emoji, &self.emoji),
             (Scope::Clipboard, &self.clipboard),
             (Scope::Services, &self.services),
+            (Scope::Nix, &self.nix),
         ]
         .into_iter()
         .filter_map(|(scope, prefix)| {
@@ -131,6 +137,30 @@ impl Default for SystemdConfig {
         Self {
             enabled: true,
             system: false,
+        }
+    }
+}
+
+/// Running packages from nixpkgs, under the `nix` prefix.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct NixConfig {
+    /// Offer the mode. It also needs `nix` on the `PATH`, and downloads the
+    /// channel's package list (about 10 MB) once a day.
+    pub enabled: bool,
+    /// The nixpkgs channel whose package list is searched.
+    pub channel: String,
+    /// The flake reference packages are run from, as in `<flake>#<package>`.
+    /// Use the one `nix run` resolves, so that what is listed matches what runs.
+    pub flake: String,
+}
+
+impl Default for NixConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            channel: "nixos-unstable".into(),
+            flake: "nixpkgs".into(),
         }
     }
 }
@@ -223,6 +253,7 @@ impl Default for Config {
             clipboard: ClipboardConfig::default(),
             emoji: EmojiConfig::default(),
             systemd: SystemdConfig::default(),
+            nix: NixConfig::default(),
             prefixes: Prefixes::default(),
             commands: BTreeMap::new(),
         }
@@ -382,5 +413,18 @@ mod tests {
         let c = parse("systemd:\n  system: true\nprefixes:\n  services: null\n").unwrap();
         assert!(c.systemd.system);
         assert_eq!(c.prefixes.split("svc ssh"), None);
+    }
+
+    #[test]
+    fn nix_prefix_and_defaults() {
+        let c = parse("").unwrap();
+        assert_eq!(c.prefixes.split("nix htop"), Some((Scope::Nix, "htop")));
+        assert!(c.nix.enabled);
+        assert_eq!(c.nix.channel, "nixos-unstable");
+        assert_eq!(c.nix.flake, "nixpkgs");
+        let c = parse("nix:\n  channel: nixos-25.05\n  flake: github:NixOS/nixpkgs/nixos-25.05\n")
+            .unwrap();
+        assert_eq!(c.nix.channel, "nixos-25.05");
+        assert_eq!(c.nix.flake, "github:NixOS/nixpkgs/nixos-25.05");
     }
 }

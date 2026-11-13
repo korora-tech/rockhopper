@@ -56,6 +56,7 @@ pub enum Symbol {
     Window,
     Command,
     Service,
+    Package,
 }
 
 pub enum ItemIcon {

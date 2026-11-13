@@ -17,7 +17,8 @@ gpui_kit::assets::icon_assets!(
         Type,
         Image,
         FaceSlightlySmiling,
-        Server
+        Server,
+        Package
     ]
 );
 
