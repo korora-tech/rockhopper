@@ -22,6 +22,7 @@ pub struct Config {
     pub system: System,
     pub clipboard: ClipboardConfig,
     pub emoji: EmojiConfig,
+    pub systemd: SystemdConfig,
     /// Text that, typed first, narrows the search to one kind of result.
     pub prefixes: Prefixes,
     /// Commands by key, laid over the built-in ones.
@@ -36,6 +37,7 @@ pub enum Scope {
     Commands,
     Emoji,
     Clipboard,
+    Services,
 }
 
 /// A prefix per scope; `None` or empty turns it off. The defaults are in
@@ -48,6 +50,7 @@ pub struct Prefixes {
     pub commands: Option<String>,
     pub emoji: Option<String>,
     pub clipboard: Option<String>,
+    pub services: Option<String>,
 }
 
 impl Default for Prefixes {
@@ -60,6 +63,7 @@ impl Default for Prefixes {
             commands: Option<String>,
             emoji: Option<String>,
             clipboard: Option<String>,
+            services: Option<String>,
         }
         #[derive(Deserialize)]
         struct Defaults {
@@ -74,6 +78,7 @@ impl Default for Prefixes {
             commands: p.commands,
             emoji: p.emoji,
             clipboard: p.clipboard,
+            services: p.services,
         }
     }
 }
@@ -88,6 +93,7 @@ impl Prefixes {
             (Scope::Commands, &self.commands),
             (Scope::Emoji, &self.emoji),
             (Scope::Clipboard, &self.clipboard),
+            (Scope::Services, &self.services),
         ]
         .into_iter()
         .filter_map(|(scope, prefix)| {
@@ -107,6 +113,26 @@ pub struct EmojiConfig {
     /// Colour emoji font family for the picker, with PNG glyphs (such as
     /// Noto Color Emoji or JoyPixels); defaults to the first one installed.
     pub font: Option<String>,
+}
+
+/// systemd services, listed under the `services` prefix.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SystemdConfig {
+    /// List services at all.
+    pub enabled: bool,
+    /// Also list system services, not just your user's. Starting and stopping
+    /// those asks for authorization through polkit.
+    pub system: bool,
+}
+
+impl Default for SystemdConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            system: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -196,6 +222,7 @@ impl Default for Config {
             system: System::default(),
             clipboard: ClipboardConfig::default(),
             emoji: EmojiConfig::default(),
+            systemd: SystemdConfig::default(),
             prefixes: Prefixes::default(),
             commands: BTreeMap::new(),
         }
@@ -344,5 +371,16 @@ mod tests {
     #[test]
     fn rejects_typos() {
         assert!(parse("apperance: {}\n").is_err());
+    }
+
+    #[test]
+    fn services_prefix_and_systemd_defaults() {
+        let c = parse("").unwrap();
+        assert_eq!(c.prefixes.split("svc ssh"), Some((Scope::Services, "ssh")));
+        assert!(c.systemd.enabled);
+        assert!(!c.systemd.system);
+        let c = parse("systemd:\n  system: true\nprefixes:\n  services: null\n").unwrap();
+        assert!(c.systemd.system);
+        assert_eq!(c.prefixes.split("svc ssh"), None);
     }
 }

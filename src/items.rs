@@ -8,6 +8,7 @@ use crate::compositor::{BuiltinCommand, Compositor, FocusedWindow, Op, Scope, Wi
 use crate::history::History;
 use crate::search::Candidate;
 use crate::system::SystemCommand;
+use crate::systemd::{Unit, UnitOp};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Item {
@@ -37,6 +38,8 @@ pub enum Item {
     Clipboard,
     /// Opens the emoji picker.
     Emoji,
+    /// A systemd service.
+    Service(Unit),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +55,7 @@ pub enum Symbol {
     Power,
     Window,
     Command,
+    Service,
 }
 
 pub enum ItemIcon {
@@ -115,6 +119,8 @@ pub enum Kind {
     App,
     Window,
     Command,
+    /// Listed only under the services prefix, never in the main search.
+    Service,
 }
 
 fn configured_key_for_builtin(command: &BuiltinCommand) -> Option<&'static str> {
@@ -301,11 +307,42 @@ pub fn entries(
         .collect()
 }
 
+/// One entry per systemd service.
+pub fn unit_entries(units: &[Unit]) -> impl Iterator<Item = Entry> + '_ {
+    units.iter().map(|unit| Entry {
+        item: Item::Service(unit.clone()),
+        candidate: Candidate {
+            name: unit.short_name().to_owned(),
+            secondary: vec![
+                unit.name.clone(),
+                unit.description.clone(),
+                unit.bus.label().to_owned(),
+            ],
+            key: Some(unit_history_key(unit)),
+        },
+    })
+}
+
+/// What `action` does to `unit`, when it changes the unit's state.
+pub fn unit_op(unit: &Unit, action: Action) -> Option<UnitOp> {
+    match action {
+        Action::Primary if unit.is_running() => Some(UnitOp::Stop),
+        Action::Primary => Some(UnitOp::Start),
+        Action::Restart => Some(UnitOp::Restart),
+        _ => None,
+    }
+}
+
+fn unit_history_key(unit: &Unit) -> String {
+    format!("systemd:{}:{}", unit.bus.label(), unit.name)
+}
+
 impl Item {
     pub fn kind_of(&self) -> Kind {
         match self {
             Self::App(_) => Kind::App,
             Self::Window { .. } => Kind::Window,
+            Self::Service(_) => Kind::Service,
             Self::System(_)
             | Self::Command { .. }
             | Self::Builtin { .. }
@@ -327,6 +364,7 @@ impl Item {
             Self::Command { command, .. } => command.name.clone(),
             Self::Clipboard => "Clipboard History".into(),
             Self::Emoji => "Search Emoji".into(),
+            Self::Service(unit) => unit.short_name().into(),
         }
     }
 
@@ -357,6 +395,7 @@ impl Item {
             Self::Command { .. } => None,
             Self::Clipboard => Some("Search what you copied".into()),
             Self::Emoji => Some("Find an emoji and copy it".into()),
+            Self::Service(unit) => Some(unit.status_line()),
         }
     }
 
@@ -366,6 +405,7 @@ impl Item {
             Self::App(i) if apps[*i].terminal => "Terminal",
             Self::App(_) => "Application",
             Self::Window { .. } => "Window",
+            Self::Service(_) => "Service",
             Self::System(_)
             | Self::Command { .. }
             | Self::Builtin { .. }
@@ -398,6 +438,7 @@ impl Item {
             Self::Builtin { .. } => ItemIcon::Symbol(Symbol::Window),
             Self::Clipboard => ItemIcon::Symbol(Symbol::Clipboard),
             Self::Emoji => ItemIcon::Symbol(Symbol::Emoji),
+            Self::Service(_) => ItemIcon::Symbol(Symbol::Service),
         }
     }
 
@@ -408,6 +449,8 @@ impl Item {
             Self::Window { .. } => "Switch to",
             Self::System(_) | Self::Command { .. } | Self::Builtin { .. } => "Run",
             Self::Clipboard | Self::Emoji => "Open",
+            Self::Service(unit) if unit.is_running() => "Stop",
+            Self::Service(_) => "Start",
         }
     }
 
@@ -420,6 +463,7 @@ impl Item {
             Self::Builtin { command, .. } => Some(command.key.into()),
             Self::Clipboard => Some("rockhopper:clipboard".into()),
             Self::Emoji => Some("rockhopper:emoji".into()),
+            Self::Service(unit) => Some(unit_history_key(unit)),
         }
     }
 
@@ -515,6 +559,13 @@ impl Item {
                     }
                 }
             }
+            Self::Service(_) => {
+                actions.extend([
+                    ActionDef::new(Action::Restart, "Restart"),
+                    ActionDef::new(Action::ShowLogs, "Show Logs"),
+                    ActionDef::new(Action::CopyName, "Copy Unit Name"),
+                ]);
+            }
             Self::System(_)
             | Self::Command { .. }
             | Self::Builtin { .. }
@@ -555,6 +606,11 @@ pub enum Action {
     MoveToMonitor,
     BringToThisWorkspace,
     ScreenshotWindow,
+    /// Restart a service.
+    Restart,
+    /// Follow a service's journal in a terminal.
+    ShowLogs,
+    CopyName,
     /// Drop the item from launch history.
     Forget,
 }
@@ -865,5 +921,47 @@ mod tests {
         let mut floating = window("a");
         floating.is_floating = true;
         assert_eq!(labels(floating)[6], "Tile Window");
+    }
+
+    #[test]
+    fn services_toggle_and_offer_restart_logs_and_copy() {
+        use crate::systemd::{ActiveState, Bus};
+        let unit = |state| Unit {
+            name: "sshd.service".into(),
+            description: "OpenSSH Daemon".into(),
+            bus: Bus::User,
+            state,
+            sub_state: "running".into(),
+        };
+        let running = Item::Service(unit(ActiveState::Active));
+        let stopped = Item::Service(unit(ActiveState::Inactive));
+        assert_eq!(running.verb(), "Stop");
+        assert_eq!(stopped.verb(), "Start");
+        assert_eq!(running.title(&[]), "sshd");
+        assert_eq!(running.kind_of(), Kind::Service);
+        let labels: Vec<_> = running
+            .actions(&[], &[], &History::default(), &Unknown)
+            .into_iter()
+            .map(|a| a.label)
+            .collect();
+        assert_eq!(labels, ["Stop", "Restart", "Show Logs", "Copy Unit Name"]);
+        let Item::Service(running) = running else {
+            unreachable!()
+        };
+        assert_eq!(unit_op(&running, Action::Primary), Some(UnitOp::Stop));
+        assert_eq!(unit_op(&running, Action::Restart), Some(UnitOp::Restart));
+        assert_eq!(unit_op(&running, Action::ShowLogs), None);
+        let entries: Vec<_> = unit_entries(std::slice::from_ref(&running)).collect();
+        assert_eq!(entries[0].candidate.name, "sshd");
+        assert!(
+            entries[0]
+                .candidate
+                .secondary
+                .contains(&"sshd.service".into())
+        );
+        assert_eq!(
+            entries[0].candidate.key.as_deref(),
+            Some("systemd:user:sshd.service")
+        );
     }
 }

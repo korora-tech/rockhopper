@@ -101,6 +101,7 @@ Typing a prefix at the start of the search narrows it to one kind of result. The
 | `apps` | off |
 | `windows` | off |
 | `clipboard`: the clipboard history | off |
+| `services`: systemd services | `svc ` |
 
 A prefix that is a letter needs something after it, such as the space in `e `, so that searching for apps that start with `e` still works. Set prefixes under `prefixes` in the config. The longest matching prefix wins, so `>` and `>>` can both be used.
 
@@ -123,6 +124,12 @@ The built-in commands act on the focused window through `niri msg action`:
 Each runs with `--id {window_id}`. The launcher closes before a command runs, so commands that act on whatever has focus (such as `niri msg action maximize-column`) work too. The defaults live in [`src/defaults.json`](src/defaults.json), which both Rockhopper and the Home Manager module read.
 
 Ranking is fuzzy, using the [nucleo](https://github.com/helix-editor/nucleo) matcher. Names that start with what you typed rank higher. Apps you open often or recently get a boost that fades over weeks. The history lives in `$XDG_STATE_HOME/rockhopper/history.json`.
+
+## Services
+
+`svc ` then a name lists your systemd user services: failed ones first, then running, then stopped. Services never appear in the main search, since there are too many. `enter` stops a running service or starts a stopped one. `ctrl-k` also offers Restart, Show Logs (follows the journal in your `terminal`) and Copy Unit Name. The list is read from `systemctl` each time the launcher opens, and an error from `systemctl` shows in the launcher.
+
+Set `systemd.system: true` to list system services too. Changing those asks for authorization through polkit, so a polkit agent must be running, and stopping or restarting one needs a second `enter`.
 
 ## Apps
 
@@ -171,6 +178,9 @@ icon_theme: Papirus-Dark
 system:
   lock: [loginctl, lock-session]     # replace the Lock Screen command
   logout: [niri, msg, action, quit]  # replace the Log Out command
+systemd:
+  enabled: true      # list services under the services prefix
+  system: false      # also list system services
 emoji:
   skin_tone: default   # default, light, medium-light, medium, medium-dark or dark
   font: Noto Color Emoji   # a colour emoji font with PNG glyphs; default: the first installed
@@ -184,6 +194,7 @@ prefixes:            # null turns one off
   apps: null
   windows: "w "
   clipboard: null
+  services: "svc "
 commands:            # merged with the built-in ones by key
   niri-fullscreen:
     keywords: [big]  # override one field of a built-in command

@@ -30,6 +30,7 @@ use crate::icons;
 use crate::ipc::{Request, TestInput};
 use crate::items::{self, Action, Entry, Item};
 use crate::launch;
+use crate::systemd::{self, Unit};
 use std::sync::Arc;
 
 /// gpui-kit wraps every window in a client-side frame: a 20px shadow gutter
@@ -54,6 +55,8 @@ pub struct Launcher {
     focused_window: Option<compositor::FocusedWindow>,
     /// The compositor the launcher is running under, detected on each open.
     pub(super) compositor: Arc<dyn Compositor>,
+    /// systemd services, listed again each time the launcher opens.
+    units: Vec<Unit>,
     /// Everything searchable, rebuilt when apps or windows change.
     pub(super) entries: Rc<Vec<Entry>>,
     fingerprint: Vec<config::FileStamp>,
@@ -154,6 +157,7 @@ impl Launcher {
             focused_workspace: None,
             commands,
             focused_window: None,
+            units: Vec::new(),
             entries: Rc::new(Vec::new()),
             fingerprint: Vec::new(),
             indexing: false,
@@ -248,6 +252,7 @@ impl Launcher {
             .find(|workspace| workspace.is_focused)
             .map(|workspace| workspace.id.clone());
         self.rebuild_entries();
+        self.refresh_units(cx);
         match self.config.appearance.theme {
             ThemeChoice::System => Theme::sync_system_appearance(None, cx),
             ThemeChoice::Light => Theme::change(ThemeMode::Light, None, cx),
@@ -358,14 +363,75 @@ impl Launcher {
     }
 
     fn rebuild_entries(&mut self) {
-        self.entries = Rc::new(items::entries(
+        let mut entries = items::entries(
             &self.apps,
             &self.windows,
             &self.commands,
             self.clipboard.is_some(),
             self.compositor.as_ref(),
             self.focused_window.clone(),
-        ));
+        );
+        entries.extend(items::unit_entries(&self.units));
+        self.entries = Rc::new(entries);
+    }
+
+    /// List services in the background; they appear when systemd answers.
+    fn refresh_units(&mut self, cx: &mut Context<Self>) {
+        if !self.config.systemd.enabled {
+            if !self.units.is_empty() {
+                self.units.clear();
+                self.rebuild_entries();
+            }
+            return;
+        }
+        let buses: &[systemd::Bus] = if self.config.systemd.system {
+            &[systemd::Bus::User, systemd::Bus::System]
+        } else {
+            &[systemd::Bus::User]
+        };
+        let buses = buses.to_vec();
+        cx.spawn(async move |this, cx| {
+            let units = cx
+                .background_spawn(async move {
+                    let mut units = Vec::new();
+                    for bus in buses {
+                        match systemd::list(bus) {
+                            Ok(found) => units.extend(found),
+                            Err(err) => eprintln!(
+                                "rockhopper: could not list {} services: {err}",
+                                bus.label()
+                            ),
+                        }
+                    }
+                    units
+                })
+                .await;
+            _ = this.update(cx, |this, cx| {
+                this.units = units;
+                this.rebuild_entries();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Run `op` on `unit`, keeping the launcher open until systemd answers so
+    /// a failure shows in it.
+    fn run_unit(&mut self, unit: Unit, op: systemd::UnitOp, cx: &mut Context<Self>) {
+        let key = Item::Service(unit.clone()).history_key(&self.apps);
+        cx.spawn(async move |this, cx| {
+            let target = unit.clone();
+            let result = cx.background_spawn(async move { target.run(op) }).await;
+            _ = this.update(cx, |this, cx| {
+                if result.is_ok()
+                    && let Some(key) = key
+                {
+                    this.history.record(&key, history::now());
+                }
+                this.finish_window_action(result, unit.short_name(), cx);
+            });
+        })
+        .detach();
     }
 
     fn refresh_clips(&mut self, cx: &mut Context<Self>) {
@@ -655,6 +721,26 @@ impl Launcher {
             ),
             (Item::Window { window, .. }, Action::ScreenshotWindow) => {
                 self.compositor.window_op(&window.id, Op::Screenshot)
+            }
+            (Item::Service(unit), Action::Primary | Action::Restart) => {
+                if let Some(op) = items::unit_op(unit, action) {
+                    self.run_unit(unit.clone(), op, cx);
+                }
+                return;
+            }
+            (Item::Service(unit), Action::ShowLogs) => {
+                let argv: Vec<String> = self
+                    .config
+                    .terminal
+                    .iter()
+                    .cloned()
+                    .chain(unit.logs_command())
+                    .collect();
+                crate::system::spawn(&argv)
+            }
+            (Item::Service(unit), Action::CopyName) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(unit.name.clone()));
+                Ok(())
             }
             (Item::System(cmd), Action::Primary) => cmd.run(&self.config, self.compositor.as_ref()),
             (

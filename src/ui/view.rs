@@ -26,7 +26,7 @@ use crate::clipboard::{Clip, Content};
 use crate::config::Scope;
 use crate::emoji::Emoji;
 use crate::history;
-use crate::items::{Action, ActionDef, Entry, Item, ItemIcon, Kind, Symbol};
+use crate::items::{self, Action, ActionDef, Entry, Item, ItemIcon, Kind, Symbol};
 use crate::search::{Candidate, Ranker};
 
 /// Most results listed for a query.
@@ -64,6 +64,7 @@ const EMOJI_PLACEHOLDER: &str = "Search emoji…";
 const APPS_PLACEHOLDER: &str = "Search apps…";
 const WINDOWS_PLACEHOLDER: &str = "Search windows…";
 const COMMANDS_PLACEHOLDER: &str = "Search commands…";
+const SERVICES_PLACEHOLDER: &str = "Search services…";
 
 actions!(
     rockhopper,
@@ -140,6 +141,7 @@ impl From<Scope> for Mode {
             Scope::Commands => Self::Only(Kind::Command),
             Scope::Emoji => Self::Emoji,
             Scope::Clipboard => Self::Clipboard,
+            Scope::Services => Self::Only(Kind::Service),
         }
     }
 }
@@ -330,6 +332,7 @@ impl LauncherView {
             Mode::Only(Kind::App) => APPS_PLACEHOLDER,
             Mode::Only(Kind::Window) => WINDOWS_PLACEHOLDER,
             Mode::Only(Kind::Command) => COMMANDS_PLACEHOLDER,
+            Mode::Only(Kind::Service) => SERVICES_PLACEHOLDER,
             Mode::Clipboard => CLIPBOARD_PLACEHOLDER,
             Mode::Emoji => EMOJI_PLACEHOLDER,
         };
@@ -354,6 +357,9 @@ impl LauncherView {
             return false;
         };
         if scope == Scope::Clipboard && launcher.clipboard.is_none() {
+            return false;
+        }
+        if scope == Scope::Services && !launcher.config.systemd.enabled {
             return false;
         }
         let (mode, rest) = (Mode::from(scope), rest.to_owned());
@@ -399,16 +405,20 @@ impl LauncherView {
                 }
             }
             Mode::Search => {
-                let candidates: Vec<_> = launcher
-                    .entries
+                // Services are many and rarely wanted, so they appear only
+                // under their own prefix.
+                let pool: Vec<usize> = (0..launcher.entries.len())
+                    .filter(|&i| launcher.entries[i].item.kind_of() != Kind::Service)
+                    .collect();
+                let candidates: Vec<_> = pool
                     .iter()
-                    .map(|e| e.candidate.clone())
+                    .map(|&i| launcher.entries[i].candidate.clone())
                     .collect();
                 let mut ranked =
                     self.ranker
                         .rank(&candidates, &launcher.history, &self.query, history::now());
                 ranked.truncate(MAX_RESULTS);
-                ranked
+                ranked.into_iter().map(|i| pool[i]).collect()
             }
             Mode::Clipboard if self.query.trim().is_empty() => (0..launcher.clips.len()).collect(),
             Mode::Clipboard => {
@@ -651,10 +661,13 @@ impl LauncherView {
                         _ => {}
                     }
                 }
-                if let (Item::System(cmd), Action::Primary) = (&item, def.action)
-                    && cmd.needs_confirmation()
-                    && !self.confirm(Confirm::Entry(target), cx)
-                {
+                let needs_confirmation = match &item {
+                    Item::System(cmd) => def.action == Action::Primary && cmd.needs_confirmation(),
+                    Item::Service(unit) => items::unit_op(unit, def.action)
+                        .is_some_and(|op| unit.needs_confirmation(op)),
+                    _ => false,
+                };
+                if needs_confirmation && !self.confirm(Confirm::Entry(target), cx) {
                     self.menu = None;
                     return;
                 }
@@ -1315,6 +1328,7 @@ impl Render for LauncherView {
             Mode::Only(Kind::App) => Some("Apps"),
             Mode::Only(Kind::Window) => Some("Windows"),
             Mode::Only(Kind::Command) => Some("Commands"),
+            Mode::Only(Kind::Service) => Some("Services"),
             Mode::Clipboard => Some("Clipboard"),
             Mode::Emoji => Some("Emoji"),
         };
@@ -1813,6 +1827,7 @@ fn item_icon(icon: ItemIcon, theme: &Theme) -> AnyElement {
                 Symbol::Emoji => Lucide::FaceSlightlySmiling,
                 Symbol::Text => Lucide::Type,
                 Symbol::Image => Lucide::Image,
+                Symbol::Service => Lucide::Server,
             };
             div()
                 .size(size)
